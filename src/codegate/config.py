@@ -1,12 +1,11 @@
-"""Configuration management for codegate."""
-
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import structlog
 import yaml
+from pydantic import BaseModel, HttpUrl
 
 from codegate.codegate_logging import LogFormat, LogLevel
 from codegate.exceptions import ConfigurationError
@@ -22,6 +21,14 @@ DEFAULT_PROVIDER_URLS = {
     "ollama": "http://localhost:11434/api",  # Default Ollama server URL
 }
 
+class ProxyRoute(BaseModel):
+    """Pydantic model for proxy route validation"""
+    path: str
+    target: HttpUrl
+
+    class Config:
+        frozen = True
+
 
 @dataclass
 class Config:
@@ -35,6 +42,9 @@ class Config:
     host: str = "localhost"
     log_level: LogLevel = LogLevel.INFO
     log_format: LogFormat = LogFormat.JSON
+    certs: str = "certs"
+    cert_file: str = "certs/server.crt"
+    key_file: str = "certs/server.key"
     prompts: PromptConfig = field(default_factory=PromptConfig)
 
     model_base_path: str = "./models"
@@ -118,7 +128,10 @@ class Config:
                 host=config_data.get("host", cls.host),
                 log_level=config_data.get("log_level", cls.log_level.value),
                 log_format=config_data.get("log_format", cls.log_format.value),
-                model_base_path=config_data.get("model_base_path", cls.model_base_path),
+                certs=config_data.get("certs", cls.certs),
+                cert_file=config_data.get("cert_file", cls.cert_file),
+                key_file=config_data.get("key_file", cls.key_file),
+                model_base_path = config_data.get("model_base_path", cls.model_base_path),
                 chat_model_n_ctx=config_data.get("chat_model_n_ctx", cls.chat_model_n_ctx),
                 chat_model_n_gpu_layers=config_data.get(
                     "chat_model_n_gpu_layers", cls.chat_model_n_gpu_layers
@@ -151,11 +164,16 @@ class Config:
                 config.log_level = LogLevel(os.environ["CODEGATE_APP_LOG_LEVEL"])
             if "CODEGATE_LOG_FORMAT" in os.environ:
                 config.log_format = LogFormat(os.environ["CODEGATE_LOG_FORMAT"])
+            if "CODEGATE_APP_CERTS" in os.environ:
+                config.host = os.environ["CODEGATE_APP_CERTS"]
+            if "CODEGATE_APP_CERT_FILE" in os.environ:
+                config.host = os.environ["CODEGATE_APP_CERT_FILE"]
+            if "CODEGATE_APP_KEY_FILE" in os.environ:
+                config.host = os.environ["CODEGATE_APP_KEY_FILE"]
             if "CODEGATE_PROMPTS_FILE" in os.environ:
                 config.prompts = PromptConfig.from_file(
                     os.environ["CODEGATE_PROMPTS_FILE"]
                 )  # noqa: E501
-
             # Load provider URLs from environment variables
             for provider in DEFAULT_PROVIDER_URLS.keys():
                 env_var = f"CODEGATE_PROVIDER_{provider.upper()}_URL"
@@ -175,6 +193,9 @@ class Config:
         cli_host: Optional[str] = None,
         cli_log_level: Optional[str] = None,
         cli_log_format: Optional[str] = None,
+        cli_certs: Optional[str] = None,
+        cli_cert_file: Optional[str] = None,
+        cli_key_file: Optional[str] = None,
         cli_provider_urls: Optional[Dict[str, str]] = None,
         model_base_path: Optional[str] = None,
         embedding_model: Optional[str] = None,
@@ -194,6 +215,7 @@ class Config:
             cli_host: Optional CLI host override
             cli_log_level: Optional CLI log level override
             cli_log_format: Optional CLI log format override
+            cli_certs: Optional Certs override
             cli_provider_urls: Optional dict of provider URLs from CLI
             model_base_path: Optional path to model base directory
             embedding_model: Optional name of the model to use for embeddings
@@ -225,6 +247,12 @@ class Config:
             config.log_level = env_config.log_level
         if "CODEGATE_LOG_FORMAT" in os.environ:
             config.log_format = env_config.log_format
+        if "CODEGATE_APP_CERTS" in os.environ:
+            config.certs = env_config.certs
+        if "CODEGATE_APP_CERT_FILE" in os.environ:
+            config.cert_file = env_config.certs
+        if "CODEGATE_APP_KEY_FILE" in os.environ:
+            config.key_file = env_config.certs
         if "CODEGATE_PROMPTS_FILE" in os.environ:
             config.prompts = env_config.prompts
         if "CODEGATE_MODEL_BASE_PATH" in os.environ:
@@ -245,6 +273,12 @@ class Config:
             config.log_level = LogLevel(cli_log_level)
         if cli_log_format is not None:
             config.log_format = LogFormat(cli_log_format)
+        if cli_certs is not None:
+            config.certs = cli_certs
+        if cli_cert_file is not None:
+            config.certs = cli_cert_file
+        if cli_key_file is not None:
+            config.certs = cli_key_file
         if prompts_path is not None:
             config.prompts = PromptConfig.from_file(prompts_path)
         if cli_provider_urls is not None:
@@ -262,3 +296,84 @@ class Config:
     @classmethod
     def get_config(cls):
         return cls.__config
+    # Proxy routes configuration
+    PROXY_ROUTES: List[tuple[str, str]] = [
+        ("/github/login", "https://github.com/login"),
+        ("/api/github/user", "https://api.github.com"),
+        ("/api/github/copilot", "https://api.github.com/copilot_internal"),
+        ("/copilot/telemetry", "https://copilot-telemetry.githubusercontent.com"),
+        ("/exp-tas", "https://default.exp-tas.com"),
+        ("/copilot/proxy", "https://copilot-proxy.githubusercontent.com"),
+        ("/origin-tracker", "https://origin-tracker.githubusercontent.com"),
+        ("/copilot/suggestions", "https://githubcopilot.com"),
+        ("/copilot/individual", "https://individual.githubcopilot.com"),
+        ("/copilot/business", "https://business.githubcopilot.com"),
+        ("/copilot/enterprise", "https://enterprise.githubcopilot.com"),
+        ("/", "https://github.com"),
+        ("/login/oauth/access_token", "https://github.com/login/oauth/access_token"),
+        ("/api/copilot", "https://api.github.com/copilot_internal"),
+        ("/api/copilot_internal", "https://api.github.com/copilot_internal"),
+        ("/v1/engines", "https://copilot-proxy.githubusercontent.com/v1/engines"),
+        ("/v1/completions", "https://copilot-proxy.githubusercontent.com/v1/completions"),
+        ("/v1/engines/copilot-codex/completions", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex/completions"),
+        ("/v1", "https://copilot-proxy.githubusercontent.com/v1"),
+        ("/v1/engines/copilot-codex", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex")
+    ]
+
+    # Headers configuration
+    PRESERVED_HEADERS: List[str] = [
+        'authorization',
+        'user-agent',
+        'content-type',
+        'accept',
+        'accept-encoding',
+        'connection',
+        'x-github-token',
+        'github-token',
+        'x-request-id',
+        'x-github-api-version',
+        'openai-organization',
+        'openai-intent',
+        'openai-model',
+        'editor-version',
+        'editor-plugin-version',
+        'vscode-sessionid',
+        'vscode-machineid',
+    ]
+
+    REMOVED_HEADERS: List[str] = [
+        'proxy-connection',
+        'proxy-authenticate',
+        'proxy-authorization',
+        'connection',
+        'keep-alive',
+        'transfer-encoding',
+        'te',
+        'trailer',
+        'proxy-authenticate',
+        'upgrade',
+        'expect',
+    ]
+
+    ENDPOINT_HEADERS: Dict[str, Dict[str, str]] = {
+        '/v1/engines/copilot-codex/completions': {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Editor-Version': 'vscode/1.95.3',
+            'Editor-Plugin-Version': 'copilot/1.246.0',
+            'Openai-Organization': 'github-copilot',
+            'Openai-Intent': 'copilot-ghost',
+            'User-Agent': 'GithubCopilot/1.246.0',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'X-Github-Api-Version': '2022-11-28',
+            'Host': 'copilot-proxy.githubusercontent.com'
+        }
+    }
+
+    # Convert routes to validated ProxyRoute objects
+    VALIDATED_ROUTES: List[ProxyRoute] = [
+        ProxyRoute(path=path, target=target)
+        for path, target in PROXY_ROUTES
+    ]
+
+
