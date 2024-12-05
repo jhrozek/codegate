@@ -6,7 +6,8 @@ import datetime
 import os
 import ssl
 from typing import Tuple
-from ..config.settings import settings
+
+from codegate.config import Config
 
 def generate_certificates() -> Tuple[str, str]:
     """Generate self-signed certificates with proper extensions for HTTPS proxy"""
