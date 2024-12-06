@@ -141,7 +141,14 @@ def show_prompts(prompts: Optional[Path]) -> None:
     type=int,
     default=None,
     callback=validate_port,
-    help="Port to listen on (default: 8989)",
+    help="Port for FastAPI server (default: 8989)",
+)
+@click.option(
+    "--proxy-port",
+    type=int,
+    default=None,
+    callback=validate_port,
+    help="Port for proxy server (default: 8990)",
 )
 @click.option(
     "--host",
@@ -211,6 +218,7 @@ def show_prompts(prompts: Optional[Path]) -> None:
 )
 def serve(
     port: Optional[int],
+    proxy_port: Optional[int],
     host: Optional[str],
     log_level: Optional[str],
     log_format: Optional[str],
@@ -242,6 +250,7 @@ def serve(
             config_path=config,
             prompts_path=prompts,
             cli_port=port,
+            cli_proxy_port=proxy_port,
             cli_host=host,
             cli_log_level=log_level,
             cli_log_format=log_format,
@@ -257,6 +266,7 @@ def serve(
             extra={
                 "host": cfg.host,
                 "port": cfg.port,
+                "proxy_port": cfg.proxy_port,
                 "log_level": cfg.log_level.value,
                 "log_format": cfg.log_format.value,
                 "prompts_loaded": len(cfg.prompts.prompts),

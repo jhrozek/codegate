@@ -39,6 +39,7 @@ class Config:
     __config = None
 
     port: int = 8989
+    proxy_port: int = 8990  # Added separate port for proxy server
     host: str = "localhost"
     log_level: LogLevel = LogLevel.INFO
     log_format: LogFormat = LogFormat.JSON
@@ -59,6 +60,10 @@ class Config:
         """Validate configuration after initialization."""
         if not isinstance(self.port, int) or not (1 <= self.port <= 65535):
             raise ConfigurationError("Port must be between 1 and 65535")
+        if not isinstance(self.proxy_port, int) or not (1 <= self.proxy_port <= 65535):
+            raise ConfigurationError("Proxy port must be between 1 and 65535")
+        if self.port == self.proxy_port:
+            raise ConfigurationError("FastAPI port and proxy port must be different")
 
         if not isinstance(self.log_level, LogLevel):
             try:
@@ -125,6 +130,7 @@ class Config:
 
             return cls(
                 port=config_data.get("port", cls.port),
+                proxy_port=config_data.get("proxy_port", cls.proxy_port),
                 host=config_data.get("host", cls.host),
                 log_level=config_data.get("log_level", cls.log_level.value),
                 log_format=config_data.get("log_format", cls.log_format.value),
@@ -158,6 +164,8 @@ class Config:
 
             if "CODEGATE_APP_PORT" in os.environ:
                 config.port = int(os.environ["CODEGATE_APP_PORT"])
+            if "CODEGATE_PROXY_PORT" in os.environ:
+                config.proxy_port = int(os.environ["CODEGATE_PROXY_PORT"])
             if "CODEGATE_APP_HOST" in os.environ:
                 config.host = os.environ["CODEGATE_APP_HOST"]
             if "CODEGATE_APP_LOG_LEVEL" in os.environ:
@@ -190,6 +198,7 @@ class Config:
         config_path: Optional[Union[str, Path]] = None,
         prompts_path: Optional[Union[str, Path]] = None,
         cli_port: Optional[int] = None,
+        cli_proxy_port: Optional[int] = None,
         cli_host: Optional[str] = None,
         cli_log_level: Optional[str] = None,
         cli_log_format: Optional[str] = None,
@@ -212,6 +221,7 @@ class Config:
             config_path: Optional path to config file
             prompts_path: Optional path to prompts file
             cli_port: Optional CLI port override
+            cli_proxy_port: Optional CLI proxy port override
             cli_host: Optional CLI host override
             cli_log_level: Optional CLI log level override
             cli_log_format: Optional CLI log format override
@@ -241,6 +251,8 @@ class Config:
         env_config = cls.from_env()
         if "CODEGATE_APP_PORT" in os.environ:
             config.port = env_config.port
+        if "CODEGATE_PROXY_PORT" in os.environ:
+            config.proxy_port = env_config.proxy_port
         if "CODEGATE_APP_HOST" in os.environ:
             config.host = env_config.host
         if "CODEGATE_APP_LOG_LEVEL" in os.environ:
@@ -267,6 +279,8 @@ class Config:
         # Override with CLI arguments
         if cli_port is not None:
             config.port = cli_port
+        if cli_proxy_port is not None:
+            config.proxy_port = cli_proxy_port
         if cli_host is not None:
             config.host = cli_host
         if cli_log_level is not None:
@@ -315,9 +329,9 @@ PROXY_ROUTES: List[tuple[str, str]] = [
     ("/api/copilot_internal", "https://api.github.com/copilot_internal"),
     ("/v1/engines", "https://copilot-proxy.githubusercontent.com/v1/engines"),
     ("/v1/completions", "https://copilot-proxy.githubusercontent.com/v1/completions"),
-    ("/v1/engines/copilot-codex/completions", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex/completions"),
-    ("/v1", "https://copilot-proxy.githubusercontent.com/v1"),
-    ("/v1/engines/copilot-codex", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex")
+    ("/v1/engines/copilot-codex/completions", "https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex/completions"),
+    ("/v1", "https://proxy.individual.githubcopilot.com/v1"),
+    ("/v1/engines/copilot-codex", "https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex")
 ]
 
 # Headers configuration
@@ -375,5 +389,3 @@ VALIDATED_ROUTES: List[ProxyRoute] = [
     ProxyRoute(path=path, target=target)
     for path, target in PROXY_ROUTES
 ]
-
-
