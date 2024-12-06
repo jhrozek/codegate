@@ -33,6 +33,7 @@ class ProxyProtocol(asyncio.Protocol):
         self.headers = []
         self.original_path = None
         self.cfg = Config.load()
+        self.target_url = None
 
     def connection_made(self, transport: asyncio.Transport):
         self.transport = transport
@@ -109,7 +110,6 @@ class ProxyProtocol(asyncio.Protocol):
             else:
                 logger.info("proxy-ep value not found.")
 
-
             return True
         except Exception as e:
             logger.error(f"Error parsing headers: {e}")
@@ -119,14 +119,30 @@ class ProxyProtocol(asyncio.Protocol):
         """Handle regular HTTP requests"""
         try:
             # Get target URL from path
-            target_url = await get_target_url(self.path)
-            if not target_url:
+            print("\n=== Debug Info ===")
+            print(f"Initial path: {self.path}")
+
+            self.target_url = await get_target_url(self.path)
+            print(f"Target URL after get_target_url: {self.target_url}")
+
+            if not self.target_url:
+                print("Target URL is None, sending 404")
                 self.send_error_response(404, b"Not Found")
                 return
-            logger.info(f"Target URL: {self.target_url}")
+
+            logger.info("Target URL: %s", self.target_url)
+
             # Parse target URL
+            print(f"About to parse URL: {self.target_url}")
             parsed_url = urlparse(self.target_url)
-            logger.info(f"Parsed URL {self.parsed_url}")
+            print("Parsed URL components:")
+            print(f"  scheme: {parsed_url.scheme}")
+            print(f"  hostname: {parsed_url.hostname}")
+            print(f"  port: {parsed_url.port}")
+            print(f"  path: {parsed_url.path}")
+            print("=== End Debug Info ===\n")
+
+            logger.info("Parsed URL: %s", parsed_url)
             self.target_host = parsed_url.hostname
             self.target_port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
 
@@ -174,6 +190,13 @@ class ProxyProtocol(asyncio.Protocol):
                 self.send_error_response(502, b"Failed to establish target connection")
 
         except Exception as e:
+            print("\n=== Error Debug Info ===")
+            print(f"Exception: {str(e)}")
+            print("Current values:")
+            print(f"  self.path: {self.path}")
+            print(f"  self.target_url: {self.target_url}")
+            print(f"  locals(): {locals()}")
+            print("=== End Error Debug Info ===\n")
             logger.error(f"Error handling HTTP request: {e}")
             self.send_error_response(502, str(e).encode())
 

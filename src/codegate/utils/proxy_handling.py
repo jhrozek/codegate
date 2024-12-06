@@ -13,34 +13,38 @@ logger = structlog.get_logger("codegate")
 async def get_target_url(path: str) -> Optional[str]:
     """Get target URL for the given path"""
 
-    logger.debug(f"Attempting to get target URL for path: {path}")
+    logger.debug("Attempting to get target URL for path: %s", path)
 
+    # Normalize path to ensure consistent handling with or without leading slash
+    normalized_path = f"/{path.strip('/')}"
+    logger.debug("Normalized path: %s", normalized_path)
 
     # Special handling for Copilot completions endpoint
-    if '/v1/engines/copilot-codex/completions' in path:
+    if '/v1/engines/copilot-codex/completions' in normalized_path:
         logger.debug("Using special case for completions endpoint")
         return 'https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex/completions'
 
-    logger.info("VALIDATED_ROUTES", VALIDATED_ROUTES)
+    logger.info("VALIDATED_ROUTES: %s", VALIDATED_ROUTES)
     # Check for exact path match first
     for route in VALIDATED_ROUTES:
-        if path == route.path:
-            logger.debug(f"Found exact path match: {path} -> {route.target}")
+        if normalized_path == route.path:
+            logger.debug("Found exact path match: %s -> %s", normalized_path, route.target)
             return str(route.target)
 
     # Then check for prefix match
     for route in VALIDATED_ROUTES:
-        if path.startswith(route.path):
+        if normalized_path.startswith(route.path):
             # For prefix matches, keep the rest of the path
-            remaining_path = path[len(route.path):]
+            remaining_path = normalized_path[len(route.path):]
             # Make sure we don't end up with double slashes
             if remaining_path and remaining_path.startswith('/'):
                 remaining_path = remaining_path[1:]
             target = urljoin(str(route.target), remaining_path)
-            logger.debug(f"Found prefix match: {path} -> {target} (using route {route.path} -> {route.target})")
+            logger.debug("Found prefix match: %s -> %s (using route %s -> %s)",
+                        normalized_path, target, route.path, route.target)
             return target
 
-    logger.warning(f"No route found for path: {path}")
+    logger.warning("No route found for path: %s", normalized_path)
     return None
 
 def prepare_headers(request: Union[Request, WebSocket], target_url: str) -> Dict[str, str]:
@@ -73,7 +77,7 @@ def prepare_headers(request: Union[Request, WebSocket], target_url: str) -> Dict
         headers.pop(header.lower(), None)
 
     # Log headers for debugging
-    logger.debug(f"Prepared headers for {target_url}: {headers}")
+    logger.debug("Prepared headers for %s: %s", target_url, headers)
 
     return headers
 
@@ -90,10 +94,10 @@ async def forward_request(
         # Get request body
         body = await request.body()
 
-        logger.debug(f"Forwarding {request.method} request to {target_url}")
-        logger.debug(f"Request headers: {headers}")
+        logger.debug("Forwarding %s request to %s", request.method, target_url)
+        logger.debug("Request headers: %s", headers)
         if body:
-            logger.debug(f"Request body length: {len(body)} bytes")
+            logger.debug("Request body length: %d bytes", len(body))
 
         # Forward the request
         response = await client.request(
@@ -104,11 +108,8 @@ async def forward_request(
             follow_redirects=True
         )
 
-        logger.debug(f"Received response from {target_url}: status={response.status_code}")
-        logger.debug(f"Response headers: {dict(response.headers)}")
-
-        # Log the forwarded request
-        logger.debug(target_url, request.method, response.status_code)
+        logger.debug("Received response from %s: status=%d", target_url, response.status_code)
+        logger.debug("Response headers: %s", dict(response.headers))
 
         # Create FastAPI response
         return Response(
@@ -118,7 +119,7 @@ async def forward_request(
         ), response.status_code
 
     except httpx.RequestError as e:
-        logger.error(f"Request error for {target_url}: {str(e)}")
+        logger.error("Request error for %s: %s", target_url, str(e))
         return Response(
             content=str(e).encode(),
             status_code=502,
@@ -126,7 +127,7 @@ async def forward_request(
         ), 502
 
     except Exception as e:
-        logger.error(f"Proxy error for {target_url}: {str(e)}")
+        logger.error("Proxy error for %s: %s", target_url, str(e))
         return Response(
             content=str(e).encode(),
             status_code=500,
@@ -147,7 +148,7 @@ async def tunnel_websocket(websocket: WebSocket, target_host: str, target_port: 
                     writer.write(data)
                     await writer.drain()
             except Exception as e:
-                logger.error(f"WS to target error: {e}")
+                logger.error("WS to target error: %s", str(e))
 
         async def forward_target_to_ws():
             try:
@@ -157,7 +158,7 @@ async def tunnel_websocket(websocket: WebSocket, target_host: str, target_port: 
                         break
                     await websocket.send_bytes(data)
             except Exception as e:
-                logger.error(f"Target to WS error: {e}")
+                logger.error("Target to WS error: %s", str(e))
 
         # Run both forwarding tasks
         await asyncio.gather(
@@ -167,7 +168,7 @@ async def tunnel_websocket(websocket: WebSocket, target_host: str, target_port: 
         )
 
     except Exception as e:
-        logger.error("tunnel_error", str(e))
+        logger.error("tunnel_error: %s", str(e))
         await websocket.close(code=1011, reason=str(e))
     finally:
         writer.close()
