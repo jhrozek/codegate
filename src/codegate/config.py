@@ -296,84 +296,84 @@ class Config:
     @classmethod
     def get_config(cls):
         return cls.__config
-    # Proxy routes configuration
-    PROXY_ROUTES: List[tuple[str, str]] = [
-        ("/github/login", "https://github.com/login"),
-        ("/api/github/user", "https://api.github.com"),
-        ("/api/github/copilot", "https://api.github.com/copilot_internal"),
-        ("/copilot/telemetry", "https://copilot-telemetry.githubusercontent.com"),
-        ("/exp-tas", "https://default.exp-tas.com"),
-        ("/copilot/proxy", "https://copilot-proxy.githubusercontent.com"),
-        ("/origin-tracker", "https://origin-tracker.githubusercontent.com"),
-        ("/copilot/suggestions", "https://githubcopilot.com"),
-        ("/copilot/individual", "https://individual.githubcopilot.com"),
-        ("/copilot/business", "https://business.githubcopilot.com"),
-        ("/copilot/enterprise", "https://enterprise.githubcopilot.com"),
-        ("/", "https://github.com"),
-        ("/login/oauth/access_token", "https://github.com/login/oauth/access_token"),
-        ("/api/copilot", "https://api.github.com/copilot_internal"),
-        ("/api/copilot_internal", "https://api.github.com/copilot_internal"),
-        ("/v1/engines", "https://copilot-proxy.githubusercontent.com/v1/engines"),
-        ("/v1/completions", "https://copilot-proxy.githubusercontent.com/v1/completions"),
-        ("/v1/engines/copilot-codex/completions", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex/completions"),
-        ("/v1", "https://copilot-proxy.githubusercontent.com/v1"),
-        ("/v1/engines/copilot-codex", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex")
-    ]
+# Proxy routes configuration
+PROXY_ROUTES: List[tuple[str, str]] = [
+    ("/github/login", "https://github.com/login"),
+    ("/api/github/user", "https://api.github.com"),
+    ("/api/github/copilot", "https://api.github.com/copilot_internal"),
+    ("/copilot/telemetry", "https://copilot-telemetry.githubusercontent.com"),
+    ("/exp-tas", "https://default.exp-tas.com"),
+    ("/copilot/proxy", "https://copilot-proxy.githubusercontent.com"),
+    ("/origin-tracker", "https://origin-tracker.githubusercontent.com"),
+    ("/copilot/suggestions", "https://githubcopilot.com"),
+    ("/copilot/individual", "https://individual.githubcopilot.com"),
+    ("/copilot/business", "https://business.githubcopilot.com"),
+    ("/copilot/enterprise", "https://enterprise.githubcopilot.com"),
+    ("/", "https://github.com"),
+    ("/login/oauth/access_token", "https://github.com/login/oauth/access_token"),
+    ("/api/copilot", "https://api.github.com/copilot_internal"),
+    ("/api/copilot_internal", "https://api.github.com/copilot_internal"),
+    ("/v1/engines", "https://copilot-proxy.githubusercontent.com/v1/engines"),
+    ("/v1/completions", "https://copilot-proxy.githubusercontent.com/v1/completions"),
+    ("/v1/engines/copilot-codex/completions", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex/completions"),
+    ("/v1", "https://copilot-proxy.githubusercontent.com/v1"),
+    ("/v1/engines/copilot-codex", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex")
+]
 
-    # Headers configuration
-    PRESERVED_HEADERS: List[str] = [
-        'authorization',
-        'user-agent',
-        'content-type',
-        'accept',
-        'accept-encoding',
-        'connection',
-        'x-github-token',
-        'github-token',
-        'x-request-id',
-        'x-github-api-version',
-        'openai-organization',
-        'openai-intent',
-        'openai-model',
-        'editor-version',
-        'editor-plugin-version',
-        'vscode-sessionid',
-        'vscode-machineid',
-    ]
+# Headers configuration
+PRESERVED_HEADERS: List[str] = [
+    'authorization',
+    'user-agent',
+    'content-type',
+    'accept',
+    'accept-encoding',
+    'connection',
+    'x-github-token',
+    'github-token',
+    'x-request-id',
+    'x-github-api-version',
+    'openai-organization',
+    'openai-intent',
+    'openai-model',
+    'editor-version',
+    'editor-plugin-version',
+    'vscode-sessionid',
+    'vscode-machineid',
+]
 
-    REMOVED_HEADERS: List[str] = [
-        'proxy-connection',
-        'proxy-authenticate',
-        'proxy-authorization',
-        'connection',
-        'keep-alive',
-        'transfer-encoding',
-        'te',
-        'trailer',
-        'proxy-authenticate',
-        'upgrade',
-        'expect',
-    ]
+REMOVED_HEADERS: List[str] = [
+    'proxy-connection',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'connection',
+    'keep-alive',
+    'transfer-encoding',
+    'te',
+    'trailer',
+    'proxy-authenticate',
+    'upgrade',
+    'expect',
+]
 
-    ENDPOINT_HEADERS: Dict[str, Dict[str, str]] = {
-        '/v1/engines/copilot-codex/completions': {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Editor-Version': 'vscode/1.95.3',
-            'Editor-Plugin-Version': 'copilot/1.246.0',
-            'Openai-Organization': 'github-copilot',
-            'Openai-Intent': 'copilot-ghost',
-            'User-Agent': 'GithubCopilot/1.246.0',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'X-Github-Api-Version': '2022-11-28',
-            'Host': 'copilot-proxy.githubusercontent.com'
-        }
+ENDPOINT_HEADERS: Dict[str, Dict[str, str]] = {
+    '/v1/engines/copilot-codex/completions': {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Editor-Version': 'vscode/1.95.3',
+        'Editor-Plugin-Version': 'copilot/1.246.0',
+        'Openai-Organization': 'github-copilot',
+        'Openai-Intent': 'copilot-ghost',
+        'User-Agent': 'GithubCopilot/1.246.0',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'X-Github-Api-Version': '2022-11-28',
+        'Host': 'copilot-proxy.githubusercontent.com'
     }
+}
 
-    # Convert routes to validated ProxyRoute objects
-    VALIDATED_ROUTES: List[ProxyRoute] = [
-        ProxyRoute(path=path, target=target)
-        for path, target in PROXY_ROUTES
-    ]
+# Convert routes to validated ProxyRoute objects
+VALIDATED_ROUTES: List[ProxyRoute] = [
+    ProxyRoute(path=path, target=target)
+    for path, target in PROXY_ROUTES
+]
 
 
