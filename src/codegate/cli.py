@@ -1,6 +1,7 @@
 """Command-line interface for codegate."""
 
 import sys
+import warnings
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -12,6 +13,10 @@ from codegate.config import Config, ConfigurationError
 from codegate.db.connection import init_db_sync
 from codegate.server import init_app
 from codegate.storage.utils import restore_storage_backup
+
+
+# Filter out the specific ResourceWarning about /dev/null
+warnings.filterwarnings("ignore", category=ResourceWarning, message="unclosed file.*'/dev/null'.*")
 
 
 def validate_port(ctx: click.Context, param: click.Parameter, value: int) -> int:
