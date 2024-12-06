@@ -6,7 +6,7 @@ from urllib.parse import unquote, urlparse, urljoin
 from fastapi import Request, Response, WebSocket
 import httpx
 from codegate.codegate_logging import setup_logging
-from codegate.core.security import create_ssl_context
+from codegate.core.security import CertificateManager
 from codegate.config import Config, VALIDATED_ROUTES
 
 # Constants for buffer sizes
@@ -211,11 +211,18 @@ async def run_proxy_server():
     """Run the proxy server"""
     cfg = Config.load()
     try:
-        ssl_context = create_ssl_context()
+        # Create certificate manager instance
+        cert_manager = CertificateManager()
+
+        # Ensure certificates exist
+        cert_manager.ensure_certificates_exist()
+
+        # Create SSL context using instance method
+        ssl_context = cert_manager.create_ssl_context()
 
         server = await create_proxy_server(
-            cfg.HOST,
-            cfg.PORT,
+            cfg.host,
+            cfg.port,
             ssl_context
         )
 

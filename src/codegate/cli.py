@@ -1,5 +1,6 @@
 """Command-line interface for codegate."""
 
+import asyncio
 import sys
 import warnings
 from pathlib import Path
@@ -7,16 +8,92 @@ from typing import Dict, Optional
 
 import click
 import structlog
+import uvicorn
+from uvicorn.config import Config as UvicornConfig
+from uvicorn.server import Server
+from uvicorn.supervisors import ChangeReload, Multiprocess
 
 from codegate.codegate_logging import LogFormat, LogLevel, setup_logging
 from codegate.config import Config, ConfigurationError
 from codegate.db.connection import init_db_sync
+from codegate.providers.github.proxy import run_proxy_server
 from codegate.server import init_app
 from codegate.storage.utils import restore_storage_backup
 
-
 # Filter out the specific ResourceWarning about /dev/null
 warnings.filterwarnings("ignore", category=ResourceWarning, message="unclosed file.*'/dev/null'.*")
+
+
+class UvicornServer:
+    """Wrapper for running uvicorn with asyncio."""
+
+    def __init__(self, app, host: str, port: int, log_level: str):
+        self.config = UvicornConfig(
+            app=app,
+            host=host,
+            port=port,
+            log_level=log_level,
+            log_config=None,
+            ssl_keyfile=None,
+            ssl_certfile=None,
+            ssl_keyfile_password=None,
+            ssl_version=None,
+            ssl_cert_reqs=None,
+            ssl_ca_certs=None,
+            ssl_ciphers=None
+        )
+        self.server = None
+
+    async def serve(self):
+        """Start uvicorn server."""
+        self.server = Server(config=self.config)
+        self.server.force_exit = True
+        await self.server.serve()
+
+    async def cleanup(self):
+        """Cleanup server resources."""
+        if self.server:
+            self.server.should_exit = True
+            await self.server.shutdown()
+
+
+async def run_servers(cfg: Config):
+    """Run both FastAPI and proxy server concurrently."""
+    logger = structlog.get_logger("codegate")
+
+    try:
+        # Initialize FastAPI app
+        app = init_app()
+
+        # Create uvicorn server instance
+        uvicorn_server = UvicornServer(
+            app=app,
+            host=cfg.host,
+            port=cfg.port,
+            log_level=cfg.log_level.value.lower()
+        )
+
+        # Create tasks for both servers
+        tasks = [
+            asyncio.create_task(uvicorn_server.serve()),
+            asyncio.create_task(run_proxy_server())
+        ]
+
+        # Wait for both servers to complete or for interruption
+        try:
+            await asyncio.gather(*tasks)
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+            # Cleanup
+            await uvicorn_server.cleanup()
+            for task in tasks:
+                task.cancel()
+            # Wait for tasks to cancel
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    except Exception as e:
+        logger.error(f"Server startup failed: {str(e)}")
+        raise
 
 
 def validate_port(ctx: click.Context, param: click.Parameter, value: int) -> int:
@@ -176,7 +253,7 @@ def serve(
         setup_logging(cfg.log_level, cfg.log_format)
         logger = structlog.get_logger("codegate")
         logger.info(
-            "Starting server",
+            "Starting servers",
             extra={
                 "host": cfg.host,
                 "port": cfg.port,
@@ -190,21 +267,13 @@ def serve(
         )
 
         init_db_sync()
-        app = init_app()
 
-        import uvicorn
-
-        uvicorn.run(
-            app,
-            host=cfg.host,
-            port=cfg.port,
-            log_level=cfg.log_level.value.lower(),
-            log_config=None,  # Default logging configuration
-        )
+        # Run both servers using asyncio
+        asyncio.run(run_servers(cfg))
 
     except KeyboardInterrupt:
         if logger:
-            logger.info("Shutting down server")
+            logger.info("Shutting down servers")
     except ConfigurationError as e:
         click.echo(f"Configuration error: {e}", err=True)
         sys.exit(1)

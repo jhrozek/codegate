@@ -138,7 +138,7 @@ class CertificateManager:
     def create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context with secure configuration"""
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_context.load_cert_chain(self.cfg.CERT_FILE, self.cfg.KEY_FILE)
+        ssl_context.load_cert_chain(self.cfg.cert_file, self.cfg.key_file)
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         ssl_context.options |= (
             ssl.OP_NO_SSLv2 |
@@ -151,5 +151,5 @@ class CertificateManager:
 
     def ensure_certificates_exist(self) -> None:
         """Ensure SSL certificates exist, generate if they don't"""
-        if not (os.path.exists(self.cfg.CERT_FILE) and os.path.exists(self.cfg.KEY_FILE)):
+        if not (os.path.exists(self.cfg.cert_file) and os.path.exists(self.cfg.key_file)):
             self.generate_certificates()
