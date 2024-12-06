@@ -202,13 +202,16 @@ class ProxyProtocol(asyncio.Protocol):
 
     def data_received(self, data: bytes):
         try:
+            # Check for buffer size limit
             if len(self.buffer) + len(data) > MAX_BUFFER_SIZE:
                 logger.error("Request too large")
                 self.send_error_response(413, b"Request body too large")
                 return
 
+            # Append received data to buffer
             self.buffer.extend(data)
 
+            # Parse headers if not already parsed
             if not self.headers_parsed:
                 self.headers_parsed = self.parse_headers()
                 if not self.headers_parsed:
@@ -219,13 +222,42 @@ class ProxyProtocol(asyncio.Protocol):
                 else:
                     # For non-CONNECT requests, handle immediately
                     asyncio.create_task(self.handle_http_request())
+
+            # If headers are parsed and there’s a target transport, forward data
             elif self.target_transport and not self.target_transport.is_closing():
                 # Forward data to target
+                body_start = self.buffer.index(b'\r\n\r\n') + 4
+                body = self.buffer[body_start:]
+
+                # Log request body intelligently
+                self.log_request_body(body)
+
+                # Forward the full data to the target
                 self.target_transport.write(data)
 
         except Exception as e:
             logger.error(f"Error in data_received: {e}")
             self.send_error_response(502, str(e).encode())
+
+
+    def log_request_body(self, body: bytes):
+        """Log the request body based on its content type."""
+        try:
+            # Truncate and log binary data
+            if b'\x00' in body or not body.isascii():
+                logger.info(f"Request Body (binary), length: {len(body)} bytes")
+                with open("request_body_dump.bin", "wb") as f:
+                    f.write(body)
+                return
+
+            # Attempt to decode as UTF-8 text
+            decoded_body = body.decode('utf-8', errors='ignore')
+            logger.info(f"Request Body (text): {decoded_body}")
+
+        except Exception as e:
+            logger.error(f"Error logging request body: {e}")
+
+
 
     def handle_connect(self):
         """Handle CONNECT requests"""
