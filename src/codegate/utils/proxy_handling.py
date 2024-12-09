@@ -22,7 +22,8 @@ async def get_target_url(path: str) -> Optional[str]:
     # Special handling for Copilot completions endpoint
     if '/v1/engines/copilot-codex/completions' in normalized_path:
         logger.debug("Using special case for completions endpoint")
-        return 'https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex/completions'
+        #return 'https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex/completions'
+        return 'https://proxy.enterprise.githubcopilot.com/v1/engines/copilot-codex/completions'
 
     logger.info("VALIDATED_ROUTES: %s", VALIDATED_ROUTES)
     # Check for exact path match first

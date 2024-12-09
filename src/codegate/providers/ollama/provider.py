@@ -6,7 +6,7 @@ from fastapi import Request
 from codegate.config import Config
 from codegate.pipeline.output import OutputPipelineProcessor
 from codegate.pipeline.secrets.manager import SecretsManager
-from codegate.providers.base import BaseProvider, SequentialPipelineProcessor
+from codegate.providers.base import BaseProvider, InputPipelineInstance
 from codegate.providers.ollama.adapter import OllamaInputNormalizer, OllamaOutputNormalizer
 from codegate.providers.ollama.completion_handler import OllamaCompletionHandler
 
@@ -15,8 +15,8 @@ class OllamaProvider(BaseProvider):
     def __init__(
         self,
         secrets_manager: Optional[SecretsManager],
-        pipeline_processor: Optional[SequentialPipelineProcessor] = None,
-        fim_pipeline_processor: Optional[SequentialPipelineProcessor] = None,
+        pipeline_processor: Optional[InputPipelineInstance] = None,
+        fim_pipeline_processor: Optional[InputPipelineInstance] = None,
         output_pipeline_processor: Optional[OutputPipelineProcessor] = None,
     ):
         completion_handler = OllamaCompletionHandler()

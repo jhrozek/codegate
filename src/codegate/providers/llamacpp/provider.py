@@ -5,7 +5,7 @@ from fastapi import Request
 
 from codegate.pipeline.output import OutputPipelineProcessor
 from codegate.pipeline.secrets.manager import SecretsManager
-from codegate.providers.base import BaseProvider, SequentialPipelineProcessor
+from codegate.providers.base import BaseProvider, InputPipelineInstance
 from codegate.providers.llamacpp.completion_handler import LlamaCppCompletionHandler
 from codegate.providers.llamacpp.normalizer import LLamaCppInputNormalizer, LLamaCppOutputNormalizer
 
@@ -14,8 +14,8 @@ class LlamaCppProvider(BaseProvider):
     def __init__(
         self,
         secrets_manager: SecretsManager,
-        pipeline_processor: Optional[SequentialPipelineProcessor] = None,
-        fim_pipeline_processor: Optional[SequentialPipelineProcessor] = None,
+        pipeline_processor: Optional[InputPipelineInstance] = None,
+        fim_pipeline_processor: Optional[InputPipelineInstance] = None,
         output_pipeline_processor: Optional[OutputPipelineProcessor] = None,
     ):
         completion_handler = LlamaCppCompletionHandler()

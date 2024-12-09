@@ -315,7 +315,7 @@ PROXY_ROUTES: List[tuple[str, str]] = [
     ("/github/login", "https://github.com/login"),
     ("/api/github/user", "https://api.github.com"),
     ("/api/github/copilot", "https://api.github.com/copilot_internal"),
-    ("/copilot/telemetry", "https://copilot-telemetry.githubusercontent.com"),
+    ("/copilot/telemetry", "https://copilot-telemetry.githubusercontent.com/telemetry"),
     ("/exp-tas", "https://default.exp-tas.com"),
     ("/copilot/proxy", "https://copilot-proxy.githubusercontent.com"),
     ("/origin-tracker", "https://origin-tracker.githubusercontent.com"),
@@ -329,9 +329,9 @@ PROXY_ROUTES: List[tuple[str, str]] = [
     ("/api/copilot_internal", "https://api.github.com/copilot_internal"),
     ("/v1/engines", "https://copilot-proxy.githubusercontent.com/v1/engines"),
     ("/v1/completions", "https://copilot-proxy.githubusercontent.com/v1/completions"),
-    ("/v1/engines/copilot-codex/completions", "https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex/completions"),
-    ("/v1", "https://proxy.individual.githubcopilot.com/v1"),
-    ("/v1/engines/copilot-codex", "https://proxy.individual.githubcopilot.com/v1/engines/copilot-codex")
+    ("/v1/engines/copilot-codex/completions", "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex/completions"),
+    ("/v1", "https://proxy.enterprise.githubcopilot.com/v1"),
+    ("/v1/engines/copilot-codex", "https://copilot-proxy.githubusercontent.com/v1/completions")
 ]
 
 # Headers configuration

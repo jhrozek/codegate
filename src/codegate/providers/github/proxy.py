@@ -1,13 +1,22 @@
 import asyncio
+import json
 import socket
 import ssl
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 import structlog
+from litellm.types.llms.openai import ChatCompletionRequest
 
 from codegate.config import Config
 from codegate.core.security import CertificateManager
+from codegate.pipeline.base import InputPipelineProcessor, PipelineStep
+from codegate.pipeline.codegate_context_retriever.codegate import CodegateContextRetriever
+from codegate.pipeline.extract_snippets.extract_snippets import CodeSnippetExtractor
+from codegate.pipeline.secrets.manager import SecretsManager
+from codegate.pipeline.secrets.secrets import CodegateSecrets
+from codegate.pipeline.system_prompt.codegate import SystemPrompt
+from codegate.pipeline.version.version import CodegateVersion
 from codegate.utils.proxy_handling import get_target_url
 
 # Constants for buffer sizes
@@ -34,6 +43,13 @@ class ProxyProtocol(asyncio.Protocol):
         self.original_path = None
         self.cfg = Config.load()
         self.target_url = None
+
+        # Initialize input pipeline processor
+        secrets_manager = SecretsManager()
+        input_steps: List[PipelineStep] = [
+            CodegateSecrets(),
+        ]
+        self.pipeline_processor = InputPipelineProcessor(input_steps, secrets_manager)
 
     def connection_made(self, transport: asyncio.Transport):
         self.transport = transport
@@ -82,6 +98,13 @@ class ProxyProtocol(asyncio.Protocol):
             # Decode headers
             self.headers = [header.decode('utf-8') for header in headers[1:]]
 
+            # Check for x-request-id header
+            self.x_request_id = None
+            for header in self.headers:
+                if header.lower().startswith("x-request-id:"):
+                    self.x_request_id = header.split(":", 1)[1].strip()
+                    break
+
             # Log the request details
             logger.info("=== Inbound Request ===")
             logger.info(f"Method: {self.method}")
@@ -114,6 +137,36 @@ class ProxyProtocol(asyncio.Protocol):
         except Exception as e:
             logger.error(f"Error parsing headers: {e}")
             return False
+
+    async def request_input_pipeline(self, body: bytes) -> bytes:
+        """Process the request body through the input pipeline"""
+        logger.info(f"Processing request through pipeline with x-request-id: {self.x_request_id}")
+
+        # Create a new input pipeline instance
+        input_pipeline_instance = self.pipeline_processor.create_instance()
+
+        # fake normalization
+        prompt = json.loads(body)
+        request = ChatCompletionRequest(
+            model="fake_model_name",
+            messages=[{"role": "user", "type": "text", "content": prompt["prompt"]}],
+        )
+
+        # Process the request through the input pipeline
+        result = await input_pipeline_instance.process_request(
+            request=request,
+            provider="github-copilot",
+            prompt_id=self.x_request_id,
+            model="model_name",  # Replace with actual model if needed
+            api_key=None  # Extract from headers if needed
+        )
+
+        # Use the modified request body from the pipeline result
+        if result.request:
+            prompt["prompt"] = result.request["messages"][1]["content"]
+            return json.dumps(prompt).encode()
+
+        return body
 
     async def handle_http_request(self):
         """Handle regular HTTP requests"""
@@ -168,22 +221,41 @@ class ProxyProtocol(asyncio.Protocol):
             if not has_host:
                 new_headers.append(f"Host: {self.target_host}")
 
-            # Reconstruct request with path
-            request_line = f"{self.method} /{self.path} {self.version}\r\n".encode()
-            header_block = '\r\n'.join(new_headers).encode()
-            headers = request_line + header_block + b'\r\n\r\n'
-
             # Send headers
             if self.target_transport:
-                self.target_transport.write(headers)
 
                 # Send body in chunks
                 body_start = self.buffer.index(b'\r\n\r\n') + 4
                 body = self.buffer[body_start:]
 
+                print("----> ORIGINAL REQUEST")
+                self.log_request(body, self.headers, self.method, self.path)
+                print("----> MODIFIED REQUEST")
+                print("original body len:", len(body))
+                body = await self.request_input_pipeline(body)
+                print("modified body len:", len(body))
+
+                self.log_request(body, self.headers, self.method, self.path)
+                print("----> FORWARDING")
+
+                for header in new_headers:
+                    if header.lower().startswith('content-length:'):
+                        new_headers.remove(header)
+                        break
+                new_headers.append(f"Content-Length: {len(body)}")
+
+                # Reconstruct request with path
+                request_line = f"{self.method} /{self.path} {self.version}\r\n".encode()
+                header_block = '\r\n'.join(new_headers).encode()
+                headers = request_line + header_block + b'\r\n\r\n'
+
+                self.target_transport.write(headers)
+
                 # Send in chunks
                 for i in range(0, len(body), CHUNK_SIZE):
                     chunk = body[i:i + CHUNK_SIZE]
+                    print(f"-----> Sending chunk {i} - {i + CHUNK_SIZE}")
+                    print(chunk)
                     self.target_transport.write(chunk)
             else:
                 logger.error("Target transport not available")
@@ -365,6 +437,71 @@ class ProxyProtocol(asyncio.Protocol):
             logger.error(f"Failed to connect to target {self.target_host}:{self.target_port}: {e}")
             self.send_error_response(502, str(e).encode())
 
+    def log_request(self, body: bytes, headers: List[str], method: str, path: str):
+        """Log request details and body"""
+        try:
+            logger.info("=== Inbound Request ===")
+            logger.info(f"Method: {method}")
+            logger.info(f"Path: {path}")
+            logger.info("Headers:")
+            for header in headers:
+                logger.info(f"  {header}")
+
+            # Try to decode as JSON for completion requests
+            if path.endswith(('/completions', '/chat/completions')):
+                try:
+                    body_json = json.loads(body)
+                    logger.info("Request Body (JSON):")
+                    logger.info(json.dumps(body_json, indent=2))
+                except json.JSONDecodeError:
+                    logger.info(f"Request Body (raw): {body.decode('utf-8', errors='ignore')}")
+            else:
+                # For non-completion requests, just log length
+                logger.info(f"Request Body Length: {len(body)} bytes")
+
+            logger.info("=====================")
+
+        except Exception as e:
+            logger.error(f"Error logging request: {e}")
+
+    def log_response(self, data: bytes, status_code: int = None):
+        """Log response details and body"""
+        try:
+            logger.info("=== Outbound Response ===")
+            if status_code:
+                logger.info(f"Status: {status_code}")
+
+            # Parse headers and body
+            if b'\r\n\r\n' in data:
+                headers_end = data.index(b'\r\n\r\n')
+                headers = data[:headers_end].split(b'\r\n')
+                body = data[headers_end + 4:]
+
+                # Log headers
+                logger.info("Headers:")
+                for header in headers[1:]:  # Skip status line
+                    logger.info(f"  {header.decode('utf-8', errors='ignore')}")
+
+                # Check if this is a completion response
+                is_completion = any(h.lower().startswith(b'content-type: application/json') for h in headers)
+
+                if is_completion:
+                    try:
+                        body_json = json.loads(body)
+                        logger.info("Response Body (JSON):")
+                        logger.info(json.dumps(body_json, indent=2))
+                    except json.JSONDecodeError:
+                        logger.info(f"Response Body (raw): {body.decode('utf-8', errors='ignore')}")
+                else:
+                    # For non-completion responses, just log length
+                    logger.info(f"Response Body Length: {len(body)} bytes")
+                    logger.info(f"Response Body (raw): {body.decode('utf-8', errors='ignore')}")
+
+            logger.info("=====================")
+
+        except Exception as e:
+            logger.error(f"Error logging response: {e}")
+
 
 class ProxyTargetProtocol(asyncio.Protocol):
     def __init__(self, proxy: ProxyProtocol):
@@ -376,8 +513,25 @@ class ProxyTargetProtocol(asyncio.Protocol):
         self.proxy.target_transport = transport
 
     def data_received(self, data: bytes):
-        if self.proxy.transport and not self.proxy.transport.is_closing():
-            self.proxy.transport.write(data)
+        """Handle data from target"""
+        try:
+            # Parse status code if present
+            status_code = None
+            if b'HTTP/' in data:
+                status_line = data.split(b'\r\n')[0].decode('utf-8')
+                status_code = int(status_line.split(' ')[1])
+
+            # Log response
+            self.proxy.log_response(data, status_code)
+
+            # Forward back to client
+            if self.proxy.transport and not self.proxy.transport.is_closing():
+                self.proxy.transport.write(data)
+
+        except Exception as e:
+            logger.error(f"Error handling response: {e}")
+            if self.proxy.transport and not self.proxy.transport.is_closing():
+                self.proxy.transport.write(data)
 
     def connection_lost(self, exc):
         if self.proxy.transport and not self.proxy.transport.is_closing():

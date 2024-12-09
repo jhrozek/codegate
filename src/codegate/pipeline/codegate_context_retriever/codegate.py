@@ -59,6 +59,7 @@ class CodegateContextRetriever(PipelineStep):
         )
 
         logger.info(f"Packages in user query: {packages}")
+        logger.info(f"Number of packages in user query: {len(packages)}")
         return packages
 
     async def process(
