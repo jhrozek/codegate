@@ -11,6 +11,7 @@ from fastapi import Request, Response, WebSocket
 from codegate.config import Config
 from codegate.codegate_logging import log_error, log_proxy_forward, logger
 from codegate.ca.codegate_ca import CertificateAuthority
+from codegate.providers.copilot.mapping import VALIDATED_ROUTES, settings
 
 logger = structlog.get_logger("codegate")
 
