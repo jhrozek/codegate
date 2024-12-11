@@ -1,13 +1,16 @@
 """Tests for the CLI module."""
 
+import asyncio
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from typing import Any, AsyncGenerator
+import signal
+from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
 from click.testing import CliRunner
+from uvicorn.config import Config as UvicornConfig
 
-from codegate.cli import cli
+from codegate.cli import cli, UvicornServer
 from codegate.codegate_logging import LogFormat, LogLevel
 from codegate.config import DEFAULT_PROVIDER_URLS
 
@@ -54,17 +57,89 @@ server_key: "test-server.key"
     return config_file
 
 
+@pytest.fixture
+async def mock_uvicorn_server() -> AsyncGenerator[MagicMock, None]:
+    """Create a mock Uvicorn server."""
+    config = UvicornConfig(app=MagicMock(), host="localhost", port=8989)
+    server = MagicMock()
+    server.serve = AsyncMock()
+    server.shutdown = AsyncMock()
+    yield UvicornServer(config=config, server=server)
+
+
 def test_cli_version(cli_runner: CliRunner) -> None:
     """Test CLI version command."""
     result = cli_runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
 
 
+@pytest.mark.asyncio
+async def test_uvicorn_server_serve(mock_uvicorn_server: UvicornServer) -> None:
+    """Test UvicornServer serve method."""
+    # Start server in background task
+    server_task = asyncio.create_task(mock_uvicorn_server.serve())
+    
+    # Wait for startup to complete
+    await mock_uvicorn_server.wait_startup_complete()
+    
+    # Verify server started
+    assert mock_uvicorn_server.server.serve.called
+    
+    # Cleanup
+    await mock_uvicorn_server.cleanup()
+    await server_task
+
+
+@pytest.mark.asyncio
+async def test_uvicorn_server_cleanup(mock_uvicorn_server: UvicornServer) -> None:
+    """Test UvicornServer cleanup method."""
+    # Start server
+    server_task = asyncio.create_task(mock_uvicorn_server.serve())
+    await mock_uvicorn_server.wait_startup_complete()
+    
+    # Trigger cleanup
+    await mock_uvicorn_server.cleanup()
+    
+    # Verify shutdown was called
+    assert mock_uvicorn_server.server.shutdown.called
+    assert mock_uvicorn_server._shutdown_event.is_set()
+    
+    await server_task
+
+
+@pytest.mark.asyncio
+async def test_uvicorn_server_signal_handling(mock_uvicorn_server: UvicornServer) -> None:
+    """Test signal handling in UvicornServer."""
+    # Mock signal handlers
+    with patch('asyncio.get_running_loop') as mock_loop:
+        mock_loop_instance = MagicMock()
+        mock_loop.return_value = mock_loop_instance
+        
+        # Start server
+        server_task = asyncio.create_task(mock_uvicorn_server.serve())
+        await mock_uvicorn_server.wait_startup_complete()
+        
+        # Simulate SIGTERM
+        mock_loop_instance.add_signal_handler.assert_any_call(
+            signal.SIGTERM,
+            pytest.approx(type(lambda: None))  # Check if a callable was passed
+        )
+        
+        # Simulate SIGINT
+        mock_loop_instance.add_signal_handler.assert_any_call(
+            signal.SIGINT,
+            pytest.approx(type(lambda: None))  # Check if a callable was passed
+        )
+        
+        await mock_uvicorn_server.cleanup()
+        await server_task
+
+
 def test_serve_default_options(
     cli_runner: CliRunner, mock_logging: Any, mock_setup_logging: Any
 ) -> None:
     """Test serve command with default options."""
-    with patch("uvicorn.run") as mock_run:
+    with patch("codegate.cli.run_servers") as mock_run:
         logger_instance = MagicMock()
         mock_logging.return_value = logger_instance
         result = cli_runner.invoke(cli, ["serve"])
@@ -73,7 +148,7 @@ def test_serve_default_options(
         mock_setup_logging.assert_called_once_with(LogLevel.INFO, LogFormat.JSON)
         mock_logging.assert_called_with("codegate")
 
-        # validate only a subset of the expected extra arguments, as image provides more
+        # validate only a subset of the expected extra arguments
         expected_extra = {
             "host": "localhost",
             "port": 8989,
@@ -99,7 +174,7 @@ def test_serve_custom_options(
     cli_runner: CliRunner, mock_logging: Any, mock_setup_logging: Any
 ) -> None:
     """Test serve command with custom options."""
-    with patch("uvicorn.run") as mock_run:
+    with patch("codegate.cli.run_servers") as mock_run:
         logger_instance = MagicMock()
         mock_logging.return_value = logger_instance
         result = cli_runner.invoke(
@@ -170,7 +245,7 @@ def test_serve_with_config_file(
     cli_runner: CliRunner, mock_logging: Any, temp_config_file: Path, mock_setup_logging: Any
 ) -> None:
     """Test serve command with config file."""
-    with patch("uvicorn.run") as mock_run:
+    with patch("codegate.cli.run_servers") as mock_run:
         logger_instance = MagicMock()
         mock_logging.return_value = logger_instance
         result = cli_runner.invoke(cli, ["serve", "--config", str(temp_config_file)])
@@ -215,7 +290,7 @@ def test_serve_priority_resolution(
     mock_setup_logging: Any,
 ) -> None:
     """Test serve command respects configuration priority."""
-    with patch("uvicorn.run") as mock_run:
+    with patch("codegate.cli.run_servers") as mock_run:
         logger_instance = MagicMock()
         mock_logging.return_value = logger_instance
         result = cli_runner.invoke(
@@ -274,7 +349,7 @@ def test_serve_certificate_options(
     cli_runner: CliRunner, mock_logging: Any, mock_setup_logging: Any
 ) -> None:
     """Test serve command with certificate options."""
-    with patch("uvicorn.run") as mock_run:
+    with patch("codegate.cli.run_servers") as mock_run:
         logger_instance = MagicMock()
         mock_logging.return_value = logger_instance
         result = cli_runner.invoke(

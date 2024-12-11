@@ -1,8 +1,12 @@
 """Command-line interface for codegate."""
 
 import sys
+import asyncio
+import signal
 from pathlib import Path
 from typing import Dict, Optional
+from uvicorn.config import Config as UvicornConfig
+from uvicorn.server import Server
 
 import click
 import structlog
@@ -13,8 +17,63 @@ from codegate.db.connection import init_db_sync
 from codegate.server import init_app
 from codegate.storage.utils import restore_storage_backup
 
+logger = structlog.get_logger("codegate")
+
+class UvicornServer:
+    def __init__(self, config: UvicornConfig, server: Server):
+        self.server = server
+        self.config = config
+        self.port = config.port
+        self.host = config.host
+        self.log_level = config.log_level
+        self.log_config = None
+        self._startup_complete = asyncio.Event()
+        self._shutdown_event = asyncio.Event()
+        self._should_exit = False
+
+        
+
+    async def serve(self) -> None:
+        """Start the uvicorn server and handle shutdown gracefully."""
+        logger.debug(f"Starting server on {self.host}:{self.port}")
+
+        self.server = Server(config=self.config)
+        self.server.force_exit = True
+
+        try:
+            self._startup_complete.set()
+            await self.server.serve()
+        except asyncio.CancelledError:
+            logger.info("Server received cancellation")
+        except Exception as e:
+            logger.exception("Unexpected error occurred during server execution", exc_info=e)
+        finally:
+            await self.cleanup()
+
+    async def wait_startup_complete(self) -> None:
+        """Wait for the server to complete startup."""
+        logger.debug("Waiting for server startup to complete")
+        await self._startup_complete.wait()
+
+    async def cleanup(self) -> None:
+        """Cleanup server resources and ensure graceful shutdown."""
+        if not self._should_exit:
+            self._should_exit = True
+            logger.debug("Initiating server shutdown")
+            self._shutdown_event.set()
+
+            if hasattr(self.server, 'shutdown'):
+                await self.server.shutdown()
+
+            # Ensure all connections are closed
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            [task.cancel() for task in tasks]
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.debug("Server shutdown complete")
 
 def validate_port(ctx: click.Context, param: click.Parameter, value: int) -> int:
+    logger.debug(f"Validating port number: {value}")
     """Validate the port number is in valid range."""
     if value is not None and not (1 <= value <= 65535):
         raise click.BadParameter("Port must be between 1 and 65535")
@@ -185,7 +244,6 @@ def serve(
     server_key: Optional[str],
 ) -> None:
     """Start the codegate server."""
-    logger = None
     try:
         # Create provider URLs dict from CLI options
         cli_provider_urls: Dict[str, str] = {}
@@ -217,6 +275,34 @@ def serve(
             server_key=server_key,
         )
 
+        init_db_sync()
+
+        # Set up event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        app = init_app()
+        # Run the server
+        try:
+            loop.run_until_complete(run_servers(cfg, app))
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt, shutting down...")
+        finally:
+            loop.close()
+
+    except ConfigurationError as e:
+        click.echo(f"Configuration error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        if logger:
+            logger.exception("Unexpected error occurred")
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+async def run_servers(cfg: Config, app) -> None:
+    """Run the codegate server."""
+    try:
         setup_logging(cfg.log_level, cfg.log_format)
         logger = structlog.get_logger("codegate")
         logger.info(
@@ -235,12 +321,11 @@ def serve(
             },
         )
 
-        init_db_sync()
-        app = init_app()
+        # init_db_sync()
+        # app = init_app()
 
-        import uvicorn
-
-        uvicorn.run(
+        # Create Uvicorn configuration
+        uvicorn_config = UvicornConfig(
             app,
             host=cfg.host,
             port=cfg.port,
@@ -248,18 +333,20 @@ def serve(
             log_config=None,  # Default logging configuration
         )
 
-    except KeyboardInterrupt:
-        if logger:
-            logger.info("Shutting down server")
-    except ConfigurationError as e:
-        click.echo(f"Configuration error: {e}", err=True)
-        sys.exit(1)
-    except Exception as e:
-        if logger:
-            logger.exception("Unexpected error occurred")
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+        # Create and start Uvicorn server
+        server = UvicornServer(uvicorn_config, Server(config=uvicorn_config))
 
+        # Set up signal handlers
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(server.cleanup()))
+
+        # Start server
+        await server.serve()
+
+    except Exception as e:
+        logger.exception("Error running servers")
+        raise e
 
 @cli.command()
 @click.option(
