@@ -283,6 +283,7 @@ def serve(
 
 
         # Check certificates and create CA if necessary
+        logger.info("Checking certificates and creating CA our created")
         ca = CertificateAuthority.get_instance()
         ca.ensure_certificates_exist()
 

@@ -265,11 +265,11 @@ class CertificateAuthority:
         )
 
         # Save CA certificate and key
-        with open(os.path.join(Config.get_config().ca_cert), "wb") as f:
+        with open(os.path.join(Config.get_config().certs_dir, Config.get_config().ca_cert), "wb") as f:
             logger.debug(f"Saving CA certificate to {Config.get_config().ca_cert}")
             f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
 
-        with open(os.path.join(Config.get_config().ca_key), "wb") as f:
+        with open(os.path.join(Config.get_config().certs_dir, Config.get_config().ca_key), "wb") as f:
             logger.debug(f"Saving CA key to {Config.get_config().ca_key}")
             f.write(ca_private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -330,11 +330,11 @@ class CertificateAuthority:
         )
 
         # os.path.join(Config.get_config().server_key)
-        with open(os.path.join(Config.get_config().server_cert), "wb") as f:
+        with open(os.path.join(Config.get_config().certs_dir, Config.get_config().server_cert), "wb") as f:
             logger.debug(f"Saving server certificate to {Config.get_config().server_cert}")
             f.write(server_cert.public_bytes(serialization.Encoding.PEM))
 
-        with open(os.path.join(Config.get_config().server_key), "wb") as f:
+        with open(os.path.join(Config.get_config().certs_dir, Config.get_config().server_key), "wb") as f:
             logger.debug(f"Saving server key to {Config.get_config().server_key}")
             f.write(server_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -369,7 +369,9 @@ class CertificateAuthority:
         logger.debug("Creating SSL context fn: create_ssl_context")
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         logger.debug(f"Loading server certificate for ssl_context from: {Config.get_config().server_cert}")
-        ssl_context.load_cert_chain(Config.get_config().server_cert, Config.get_config().server_key)
+        ssl_context.load_cert_chain(
+            os.path.join(Config.get_config().certs_dir, Config.get_config().server_cert), 
+            os.path.join(Config.get_config().certs_dir, Config.get_config().server_key))
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         ssl_context.options |= (
             ssl.OP_NO_SSLv2 |
@@ -387,6 +389,8 @@ class CertificateAuthority:
         if not (os.path.exists(Config.get_config().server_cert) and os.path.exists(Config.get_config().server_key)):
             logger.debug("Certificates not found, generating new certificates")
             self.generate_certificates()
+        else:
+            logger.debug(f"Certificates found at: {Config.get_config().server_cert} and {Config.get_config().server_key}")
 
     def get_ssl_context(self) -> ssl.SSLContext:
         """Get SSL context with certificates"""
