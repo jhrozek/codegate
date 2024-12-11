@@ -45,3 +45,6 @@ weaviate_data/
 
 # Codegate Dashboard DB
 codegate.db
+
+# certificate directory
+certs/
