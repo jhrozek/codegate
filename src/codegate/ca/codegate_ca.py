@@ -386,7 +386,7 @@ class CertificateAuthority:
     def ensure_certificates_exist(self) -> None:
         """Ensure SSL certificates exist, generate if they don't"""
         logger.debug("Ensuring certificates exist. fn ensure_certificates_exist")
-        if not (os.path.exists(Config.get_config().server_cert) and os.path.exists(Config.get_config().server_key)):
+        if not (os.path.exists(os.path.join(Config.get_config().certs_dir, Config.get_config().server_cert)) and os.path.exists(os.path.join(Config.get_config().certs_dir, Config.get_config().server_key))):
             logger.debug("Certificates not found, generating new certificates")
             self.generate_certificates()
         else:
