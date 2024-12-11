@@ -17,7 +17,7 @@ class CertificateAuthority:
     Access the instance using CertificateAuthority.get_instance()
     """
     _instance: Optional['CertificateAuthority'] = None
-    
+
     @classmethod
     def get_instance(cls) -> 'CertificateAuthority':
         """Get or create the singleton instance of CertificateAuthority"""
@@ -25,7 +25,7 @@ class CertificateAuthority:
             logger.debug("Creating new CertificateAuthority instance")
             cls._instance = cls()
         return cls._instance
-    
+
     def __init__(self):
         """
         Initialize the Certificate Authority.
@@ -33,7 +33,7 @@ class CertificateAuthority:
         """
         if CertificateAuthority._instance is not None:
             raise RuntimeError("Use CertificateAuthority.get_instance() instead")
-            
+
         logger.debug("Initializing Certificate Authority class: CertificateAuthority")
         self._ca_cert = None
         self._ca_key = None
@@ -371,8 +371,8 @@ class CertificateAuthority:
         ssl_context.load_cert_chain(Config.get_config().server_cert, Config.get_config().server_key)
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         ssl_context.options |= (
-            ssl.OP_NO_SSLv2 | 
-            ssl.OP_NO_SSLv3 | 
+            ssl.OP_NO_SSLv2 |
+            ssl.OP_NO_SSLv3 |
             ssl.OP_NO_COMPRESSION |
             ssl.OP_CIPHER_SERVER_PREFERENCE
         )
@@ -395,5 +395,5 @@ class CertificateAuthority:
 
     def get_cert_files(self) -> Tuple[str, str]:
         """Get certificate and key file paths"""
-        logger.debug("Getting certificate and key file paths fn: get_cert_files")   
+        logger.debug("Getting certificate and key file paths fn: get_cert_files")
         return Config.get_config().server_cert, Config.get_config().server_key
