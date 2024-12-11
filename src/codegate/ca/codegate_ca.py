@@ -44,8 +44,8 @@ class CertificateAuthority:
     def _load_or_generate_ca(self):
         """Load existing CA certificate and key or generate new ones"""
         logger.debug("Loading or generating CA certificate and key: fn: _load_or_generate_ca")
-        ca_cert = Config.get_config().ca_cert
-        ca_key = Config.get_config().ca_key
+        ca_cert = os.path.join(Config.get_config().certs_dir, Config.get_config().ca_cert)
+        ca_key = os.path.join(Config.get_config().certs_dir, Config.get_config().ca_key)
 
         if os.path.exists(ca_cert) and os.path.exists(ca_key):
             # Load existing CA certificate and key
