@@ -6,19 +6,40 @@ import datetime
 import os
 import ssl
 import structlog
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 from codegate.config import Config
 
 logger = structlog.get_logger("codegate")
 
 class CertificateAuthority:
-    logger.debug("Initializing Certificate Authority class: CertificateAuthority")
+    """
+    Singleton class for Certificate Authority management.
+    Access the instance using CertificateAuthority.get_instance()
+    """
+    _instance: Optional['CertificateAuthority'] = None
+    
+    @classmethod
+    def get_instance(cls) -> 'CertificateAuthority':
+        """Get or create the singleton instance of CertificateAuthority"""
+        if cls._instance is None:
+            logger.debug("Creating new CertificateAuthority instance")
+            cls._instance = cls()
+        return cls._instance
     
     def __init__(self):
+        """
+        Initialize the Certificate Authority.
+        Note: Use get_instance() instead of creating a new instance directly.
+        """
+        if CertificateAuthority._instance is not None:
+            raise RuntimeError("Use CertificateAuthority.get_instance() instead")
+            
+        logger.debug("Initializing Certificate Authority class: CertificateAuthority")
         self._ca_cert = None
         self._ca_key = None
         self._cert_cache: Dict[str, Tuple[str, str]] = {}
         self._load_or_generate_ca()
+        CertificateAuthority._instance = self
 
     def _load_or_generate_ca(self):
         """Load existing CA certificate and key or generate new ones"""
@@ -376,6 +397,3 @@ class CertificateAuthority:
         """Get certificate and key file paths"""
         logger.debug("Getting certificate and key file paths fn: get_cert_files")   
         return Config.get_config().server_cert, Config.get_config().server_key
-
-# Initialize the Certificate Authority
-ca = CertificateAuthority()

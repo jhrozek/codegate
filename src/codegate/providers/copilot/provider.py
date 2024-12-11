@@ -9,16 +9,9 @@ import httpx
 import structlog
 from fastapi import Request, Response, WebSocket
 
-# from ..config.settings import VALIDATED_ROUTES, settings
 from codegate.config import Config
-
-# from ..core.logging import log_error, log_proxy_forward, logger
 from codegate.codegate_logging import log_error, log_proxy_forward, logger
-
-# from .core.security import ca, create_ssl_context
 from codegate.ca.codegate_ca import CertificateAuthority
-
-# from .utils.proxy import get_target_url
 
 logger = structlog.get_logger("codegate")
 
@@ -48,6 +41,8 @@ class ProxyProtocol(asyncio.Protocol):
         self.original_path = None
         self.ssl_context = None
         self.decrypted_data = bytearray()
+        # Get the singleton instance of CertificateAuthority
+        self.ca = CertificateAuthority.get_instance()
 
     def connection_made(self, transport: asyncio.Transport):
         logger.debug("Client connected fn: connection_made")
@@ -134,13 +129,12 @@ class ProxyProtocol(asyncio.Protocol):
             logger.debug("=" * 40)
 
     async def handle_http_request(self):
-        
         logger.debug("Handling HTTP request fn: handle_http_request")
         logger.debug("=" * 40)
         logger.debug(f"Method: {self.method}")
         logger.debug(f"Searched Path: {self.path} in target URL")
         try:
-            target_url = await get_target_url(self.path)
+            target_url = await self.get_target_url(self.path)
             logger.debug(f"Target URL: {target_url}")
             if not target_url:
                 self.send_error_response(404, b"Not Found")
@@ -245,9 +239,9 @@ class ProxyProtocol(asyncio.Protocol):
                 logger.debug("Headers:")
                 for header in self.headers:
                     logger.debug(f"  {header}")
-            
+
                 logger.debug("=" * 40)
-                cert_path, key_path = ca.get_domain_certificate(self.target_host)
+                cert_path, key_path = self.ca.get_domain_certificate(self.target_host)
 
                 logger.debug(f"Setting up SSL context for {self.target_host}")
                 logger.debug(f"Using certificate: {cert_path}")
@@ -346,6 +340,249 @@ class ProxyProtocol(asyncio.Protocol):
         if self.target_transport and not self.target_transport.is_closing():
             self.target_transport.close()
 
+    @classmethod
+    async def create_proxy_server(cls, host: str, port: int, ssl_context: Optional[ssl.SSLContext] = None):
+        logger.debug(f"Creating proxy server on {host}:{port} fn: create_proxy_server")
+        loop = asyncio.get_event_loop()
+
+        def create_protocol():
+            logger.debug("Creating protocol for proxy server fn: create_protocol")
+            return cls(loop)
+
+        logger.debug(f"Starting proxy server on {host}:{port}")
+        server = await loop.create_server(
+            create_protocol,
+            host,
+            port,
+            ssl=ssl_context,
+            reuse_port=True,
+            start_serving=True
+        )
+
+        logger.debug(f"Proxy server running on {host}:{port}")
+        return server
+
+    @classmethod
+    async def run_proxy_server(cls):
+        logger.debug("Running proxy server fn: run_proxy_server")
+        try:
+            # Get the singleton instance of CertificateAuthority
+            ca = CertificateAuthority.get_instance()
+            logger.debug("Creating SSL context for proxy server")
+            ssl_context = ca.create_ssl_context()
+            server = await cls.create_proxy_server(
+                settings.HOST,
+                settings.PORT,
+                ssl_context
+            )
+            logger.debug("Proxy server created")
+            async with server:
+                await server.serve_forever()
+
+        except Exception as e:
+            logger.error(f"Proxy server error: {e}")
+            raise
+
+    @classmethod
+    async def get_target_url(cls, path: str) -> Optional[str]:
+        """Get target URL for the given path"""
+        logger.debug(f"Attempting to get target URL for path: {path} fn: get_target_url")
+
+        logger.debug("=" * 40)
+        logger.debug("Validated routes:")
+        for route in VALIDATED_ROUTES:
+            if path == route.path:
+                logger.debug(f"  {route.path} -> {route.target}")
+                logger.debug(f"Found exact path match: {path} -> {route.target}")
+                return str(route.target)
+
+        # Then check for prefix match
+        for route in VALIDATED_ROUTES:
+            if path.startswith(route.path):
+                # For prefix matches, keep the rest of the path
+                remaining_path = path[len(route.path):]
+                logger.debug(f"Remaining path: {remaining_path}")
+                # Make sure we don't end up with double slashes
+                if remaining_path and remaining_path.startswith('/'):
+                    remaining_path = remaining_path[1:]
+                target = urljoin(str(route.target), remaining_path)
+                logger.debug(f"Found prefix match: {path} -> {target} (using route {route.path} -> {route.target})")
+                return target
+
+        logger.warning(f"No route found for path: {path}")
+        return None
+
+    @classmethod
+    def prepare_headers(cls, request: Union[Request, WebSocket], target_url: str) -> Dict[str, str]:
+        """Prepare headers for the proxy request"""
+        logger.debug(f"Preparing headers for {target_url}")
+        headers = {}
+
+        # Get headers from request
+        logger.debug("Request headers:")
+        if isinstance(request, Request):
+            request_headers = request.headers
+        else:  # WebSocket
+            request_headers = request.headers
+
+        # Copy preserved headers from the original request
+        logger.debug("=" * 40)
+        logger.debug("Preserved headers:")
+        for header, value in request_headers.items():
+            if header.lower() in [h.lower() for h in settings.PRESERVED_HEADERS]:
+                headers[header] = value
+        logger.debug("=" * 40)
+
+        # Add endpoint-specific headers
+        logger.debug("=" * 40)
+        logger.debug("Endpoint headers:")
+        if isinstance(request, Request):
+            path = urlparse(str(request.url)).path
+            if path in settings.ENDPOINT_HEADERS:
+                headers.update(settings.ENDPOINT_HEADERS[path])
+
+        # Set the Host header to match the target
+        target_parsed = urlparse(target_url)
+        headers['Host'] = target_parsed.netloc
+
+        # Remove any headers that shouldn't be forwarded
+        for header in settings.REMOVED_HEADERS:
+            headers.pop(header.lower(), None)
+
+        # Log headers for debugging
+        logger.debug(f"Prepared headers for {target_url}: {headers}")
+        logger.debug("=" * 40)
+
+        return headers
+
+    @classmethod
+    async def forward_request(
+        cls,
+        request: Request,
+        target_url: str,
+        client: httpx.AsyncClient
+    ) -> Tuple[Response, int]:
+        """Forward the request to the target URL"""
+        logger.debug(f"Forwarding request to {target_url} fn: forward_request")
+        try:
+            # Prepare headers
+            headers = cls.prepare_headers(request, target_url)
+
+            # Get request body
+            body = await request.body()
+
+            logger.debug(f"Forwarding {request.method} request to {target_url}")
+            logger.debug(f"Request headers: {headers}")
+            if body:
+                logger.debug(f"Request body length: {len(body)} bytes")
+
+            # Forward the request
+            logger.debug(f"Sending request to {target_url}")
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+                follow_redirects=True
+            )
+
+            logger.debug(f"Received response from {target_url}: status={response.status_code}")
+            logger.debug(f"Response headers: {dict(response.headers)}")
+
+            # Log the forwarded request
+            logger.debug(f"Forwarded request to {target_url}: {response.status_code}")
+            log_proxy_forward(target_url, request.method, response.status_code)
+
+            # Create FastAPI response
+            logger.debug(f"Creating FastAPI response for {target_url}")
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=dict(response.headers)
+            ), response.status_code
+
+        except httpx.RequestError as e:
+            log_error("request_error", str(e), {"target_url": target_url})
+            logger.error(f"Request error for {target_url}: {str(e)}")
+            return Response(
+                content=str(e).encode(),
+                status_code=502,
+                media_type="text/plain"
+            ), 502
+
+        except Exception as e:
+            log_error("proxy_error", str(e), {"target_url": target_url})
+            logger.error(f"Proxy error for {target_url}: {str(e)}")
+            return Response(
+                content=str(e).encode(),
+                status_code=500,
+                media_type="text/plain"
+            ), 500
+
+    @classmethod
+    async def tunnel_websocket(cls, websocket: WebSocket, target_host: str, target_port: int):
+        """Create a tunnel between WebSocket and target server"""
+        logger.debug(f"Creating WebSocket tunnel to {target_host}:{target_port}")
+        try:
+            # Connect to target server
+            reader, writer = await asyncio.open_connection(target_host, target_port)
+
+            # Create bidirectional tunnel
+            logger.debug("Creating bidirectional tunnel")
+
+            async def forward_ws_to_target():
+                logger.debug("Forwarding WS to target")
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        writer.write(data)
+                        await writer.drain()
+                except Exception as e:
+                    logger.error(f"WS to target error: {e}")
+
+            async def forward_target_to_ws():
+                try:
+                    while True:
+                        data = await reader.read(8192)
+                        if not data:
+                            break
+                        await websocket.send_bytes(data)
+                except Exception as e:
+                    logger.error(f"Target to WS error: {e}")
+
+            # Run both forwarding tasks
+            await asyncio.gather(
+                forward_ws_to_target(),
+                forward_target_to_ws(),
+                return_exceptions=True
+            )
+
+        except Exception as e:
+            log_error("tunnel_error", str(e))
+            await websocket.close(code=1011, reason=str(e))
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    @classmethod
+    def create_error_response(cls, status_code: int, message: str) -> Response:
+        """Create an error response"""
+        content = {
+            "error": {
+                "message": message,
+                "type": "proxy_error",
+                "code": status_code
+            }
+        }
+        return Response(
+            content=str(content).encode(),
+            status_code=status_code,
+            media_type="application/json"
+        )
+
 class ProxyTargetProtocol(asyncio.Protocol):
     def __init__(self, proxy: ProxyProtocol):
         logger.debug("Initializing ProxyTargetProtocol class: ProxyTargetProtocol")
@@ -367,236 +604,3 @@ class ProxyTargetProtocol(asyncio.Protocol):
         logger.debug(f"Connection lost from target {self.proxy.target_host}:{self.proxy.target_port}")
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.transport.close()
-
-async def create_proxy_server(host: str, port: int, ssl_context: Optional[ssl.SSLContext] = None):
-    logger.debug(f"Creating proxy server on {host}:{port} fn: create_proxy_server")
-    loop = asyncio.get_event_loop()
-
-    def create_protocol():
-        logger.debug("Creating protocol for proxy server fn: create_protocol")
-        return ProxyProtocol(loop)
-
-    logger.debug(f"Starting proxy server on {host}:{port}")
-    server = await loop.create_server(
-        create_protocol,
-        host,
-        port,
-        ssl=ssl_context,
-        reuse_port=True,
-        start_serving=True
-    )
-
-    logger.debug(f"Proxy server running on {host}:{port}")
-    return server
-
-async def run_proxy_server():
-    logger.debug("Running proxy server fn: run_proxy_server")
-    try:
-        logger.debug("Creating SSL context for proxy server")
-        ssl_context = create_ssl_context()
-        server = await create_proxy_server(
-            settings.HOST,
-            settings.PORT,
-            ssl_context
-        )
-        logger.debug("Proxy server created")
-        async with server:
-            await server.serve_forever()
-
-    except Exception as e:
-        logger.error(f"Proxy server error: {e}")
-        raise
-
-async def get_target_url(path: str) -> Optional[str]:
-    """Get target URL for the given path"""
-    logger.debug(f"Attempting to get target URL for path: {path} fn: get_target_url")
-
-    logger.debug("=" * 40)
-    logger.debug("Validated routes:")
-    for route in VALIDATED_ROUTES:
-        if path == route.path:
-            logger.debug(f"  {route.path} -> {route.target}")
-            logger.debug(f"Found exact path match: {path} -> {route.target}")
-            return str(route.target)
-
-    # Then check for prefix match
-    for route in VALIDATED_ROUTES:
-        if path.startswith(route.path):
-            # For prefix matches, keep the rest of the path
-            remaining_path = path[len(route.path):]
-            logger.debug(f"Remaining path: {remaining_path}")
-            # Make sure we don't end up with double slashes
-            if remaining_path and remaining_path.startswith('/'):
-                remaining_path = remaining_path[1:]
-            target = urljoin(str(route.target), remaining_path)
-            logger.debug(f"Found prefix match: {path} -> {target} (using route {route.path} -> {route.target})")
-            return target
-
-    logger.warning(f"No route found for path: {path}")
-    return None
-
-def prepare_headers(request: Union[Request, WebSocket], target_url: str) -> Dict[str, str]:
-    """Prepare headers for the proxy request"""
-    logger.debug(f"Preparing headers for {target_url}")
-    headers = {}
-
-    # Get headers from request
-    logger.debug("Request headers:")
-    if isinstance(request, Request):
-        request_headers = request.headers
-    else:  # WebSocket
-        request_headers = request.headers
-
-    # Copy preserved headers from the original request
-    logger.debug("=" * 40)
-    logger.debug("Preserved headers:")
-    for header, value in request_headers.items():
-        if header.lower() in [h.lower() for h in settings.PRESERVED_HEADERS]:
-            headers[header] = value
-    logger.debug("=" * 40)
-
-    # Add endpoint-specific headers
-    logger.debug("=" * 40)
-    logger.debug("Endpoint headers:")
-    if isinstance(request, Request):
-        path = urlparse(str(request.url)).path
-        if path in settings.ENDPOINT_HEADERS:
-            headers.update(settings.ENDPOINT_HEADERS[path])
-    
-    # Set the Host header to match the target
-    target_parsed = urlparse(target_url)
-    headers['Host'] = target_parsed.netloc
-
-    # Remove any headers that shouldn't be forwarded
-    for header in settings.REMOVED_HEADERS:
-        headers.pop(header.lower(), None)
-
-    # Log headers for debugging
-    logger.debug(f"Prepared headers for {target_url}: {headers}")
-    logger.debug("=" * 40)
-
-    return headers
-
-async def forward_request(
-    request: Request,
-    target_url: str,
-    client: httpx.AsyncClient
-) -> Tuple[Response, int]:
-    """Forward the request to the target URL"""
-    logger.debug(f"Forwarding request to {target_url} fn: forward_request")
-    try:
-        # Prepare headers
-        headers = prepare_headers(request, target_url)
-
-        # Get request body
-        body = await request.body()
-
-        logger.debug(f"Forwarding {request.method} request to {target_url}")
-        logger.debug(f"Request headers: {headers}")
-        if body:
-            logger.debug(f"Request body length: {len(body)} bytes")
-
-        # Forward the request
-        logger.debug(f"Sending request to {target_url}")
-        response = await client.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            content=body,
-            follow_redirects=True
-        )
-
-        logger.debug(f"Received response from {target_url}: status={response.status_code}")
-        logger.debug(f"Response headers: {dict(response.headers)}")
-
-        # Log the forwarded request
-        logger.debug(f"Forwarded request to {target_url}: {response.status_code}")
-        log_proxy_forward(target_url, request.method, response.status_code)
-
-        # Create FastAPI response
-        logger.debug(f"Creating FastAPI response for {target_url}")
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            headers=dict(response.headers)
-        ), response.status_code
-
-    except httpx.RequestError as e:
-        log_error("request_error", str(e), {"target_url": target_url})
-        logger.error(f"Request error for {target_url}: {str(e)}")
-        return Response(
-            content=str(e).encode(),
-            status_code=502,
-            media_type="text/plain"
-        ), 502
-
-    except Exception as e:
-        log_error("proxy_error", str(e), {"target_url": target_url})
-        logger.error(f"Proxy error for {target_url}: {str(e)}")
-        return Response(
-            content=str(e).encode(),
-            status_code=500,
-            media_type="text/plain"
-        ), 500
-
-async def tunnel_websocket(websocket: WebSocket, target_host: str, target_port: int):
-    """Create a tunnel between WebSocket and target server"""
-    logger.debug(f"Creating WebSocket tunnel to {target_host}:{target_port}")
-    try:
-        # Connect to target server
-        reader, writer = await asyncio.open_connection(target_host, target_port)
-
-        # Create bidirectional tunnel
-        logger.debug("Creating bidirectional tunnel")
-
-        async def forward_ws_to_target():
-            logger.debug("Forwarding WS to target")
-            try:
-                while True:
-                    data = await websocket.receive_bytes()
-                    writer.write(data)
-                    await writer.drain()
-            except Exception as e:
-                logger.error(f"WS to target error: {e}")
-
-        async def forward_target_to_ws():
-            try:
-                while True:
-                    data = await reader.read(8192)
-                    if not data:
-                        break
-                    await websocket.send_bytes(data)
-            except Exception as e:
-                logger.error(f"Target to WS error: {e}")
-
-        # Run both forwarding tasks
-        await asyncio.gather(
-            forward_ws_to_target(),
-            forward_target_to_ws(),
-            return_exceptions=True
-        )
-
-    except Exception as e:
-        log_error("tunnel_error", str(e))
-        await websocket.close(code=1011, reason=str(e))
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-
-def create_error_response(status_code: int, message: str) -> Response:
-    """Create an error response"""
-    content = {
-        "error": {
-            "message": message,
-            "type": "proxy_error",
-            "code": status_code
-        }
-    }
-    return Response(
-        content=str(content).encode(),
-        status_code=status_code,
-        media_type="application/json"
-    )
