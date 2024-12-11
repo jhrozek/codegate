@@ -179,8 +179,8 @@ class CertificateAuthority:
 
         # Save domain certificate and key
         logger.debug(f"Saving certificate and key for domain: {domain}")
-        domain_cert_path = Config.get_config().certs_dir + f"/{domain}.crt"
-        domain_key_path = Config.get_config().certs_dir + f"/{domain}.key"
+        domain_cert_path = os.path.join(Config.get_config().certs_dir, f"{domain}.crt")
+        domain_key_path = os.path.join(Config.get_config().certs_dir, f"{domain}.key")
 
         with open(domain_cert_path, "wb") as f:
             logger.debug(f"Saving certificate to {domain_cert_path}")
