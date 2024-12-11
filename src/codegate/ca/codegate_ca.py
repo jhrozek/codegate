@@ -265,11 +265,11 @@ class CertificateAuthority:
         )
 
         # Save CA certificate and key
-        with open(Config.get_config().ca_cert, "wb") as f:
+        with open(os.path.join(Config.get_config().ca_cert), "wb") as f:
             logger.debug(f"Saving CA certificate to {Config.get_config().ca_cert}")
             f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
 
-        with open(Config.get_config().ca_key, "wb") as f:
+        with open(os.path.join(Config.get_config().ca_key), "wb") as f:
             logger.debug(f"Saving CA key to {Config.get_config().ca_key}")
             f.write(ca_private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -329,11 +329,12 @@ class CertificateAuthority:
             algorithm=hashes.SHA256(),
         )
 
-        with open(Config.get_config().server_cert, "wb") as f:
+        # os.path.join(Config.get_config().server_key)
+        with open(os.path.join(Config.get_config().server_cert), "wb") as f:
             logger.debug(f"Saving server certificate to {Config.get_config().server_cert}")
             f.write(server_cert.public_bytes(serialization.Encoding.PEM))
 
-        with open(Config.get_config().server_key, "wb") as f:
+        with open(os.path.join(Config.get_config().server_key), "wb") as f:
             logger.debug(f"Saving server key to {Config.get_config().server_key}")
             f.write(server_key.private_bytes(
                 encoding=serialization.Encoding.PEM,

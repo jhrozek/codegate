@@ -9,9 +9,10 @@ import structlog
 from fastapi import Request, Response, WebSocket
 
 from codegate.config import Config
-from codegate.codegate_logging import log_error, log_proxy_forward, logger
+
+# from codegate.codegate_logging import log_error, log_proxy_forward, logger
 from codegate.ca.codegate_ca import CertificateAuthority
-from codegate.providers.copilot.mapping import VALIDATED_ROUTES, settings
+from codegate.providers.copilot.mapping import VALIDATED_ROUTES
 
 logger = structlog.get_logger("codegate")
 
@@ -19,9 +20,9 @@ logger = structlog.get_logger("codegate")
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB
 CHUNK_SIZE = 64 * 1024  # 64KB
 
-class ProxyProtocol(asyncio.Protocol):
+class CopilotProvider(asyncio.Protocol):
     def __init__(self, loop):
-        logger.debug("Initializing ProxyProtocol class: ProxyProtocol")
+        logger.debug("Initializing CopilotProvider class: CopilotProvider")
         self.loop = loop
         self.transport: Optional[asyncio.Transport] = None
         self.target_transport: Optional[asyncio.Transport] = None
@@ -146,7 +147,7 @@ class ProxyProtocol(asyncio.Protocol):
             self.target_host = parsed_url.hostname
             self.target_port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
             logger.debug("=" * 40)
-            target_protocol = ProxyTargetProtocol(self)
+            target_protocol = CopilotProxyTargetProtocol(self)
             logger.debug(f"Connecting to {self.target_host}:{self.target_port}")
             await self.loop.create_connection(
                 lambda: target_protocol,
@@ -301,7 +302,7 @@ class ProxyProtocol(asyncio.Protocol):
 
             # Connect directly to target host
             logger.debug(f"Connecting to {self.target_host}:{self.target_port}")
-            target_protocol = ProxyTargetProtocol(self)
+            target_protocol = CopilotProxyTargetProtocol(self)
             transport, _ = await self.loop.create_connection(
                 lambda: target_protocol,
                 self.target_host,
@@ -583,9 +584,9 @@ class ProxyProtocol(asyncio.Protocol):
             media_type="application/json"
         )
 
-class ProxyTargetProtocol(asyncio.Protocol):
-    def __init__(self, proxy: ProxyProtocol):
-        logger.debug("Initializing ProxyTargetProtocol class: ProxyTargetProtocol")
+class CopilotProxyTargetProtocol(asyncio.Protocol):
+    def __init__(self, proxy: CopilotProvider):
+        logger.debug("Initializing CopilotProxyTargetProtocol class: CopilotProxyTargetProtocol")
         self.proxy = proxy
         self.transport: Optional[asyncio.Transport] = None
 

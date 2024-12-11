@@ -16,6 +16,8 @@ from codegate.config import Config, ConfigurationError
 from codegate.db.connection import init_db_sync
 from codegate.server import init_app
 from codegate.storage.utils import restore_storage_backup
+from codegate.providers.copilot.provider import CopilotProvider
+from codegate.ca.codegate_ca import CertificateAuthority
 
 logger = structlog.get_logger("codegate")
 
@@ -31,7 +33,7 @@ class UvicornServer:
         self._shutdown_event = asyncio.Event()
         self._should_exit = False
 
-        
+
 
     async def serve(self) -> None:
         """Start the uvicorn server and handle shutdown gracefully."""
@@ -57,12 +59,14 @@ class UvicornServer:
 
     async def cleanup(self) -> None:
         """Cleanup server resources and ensure graceful shutdown."""
+        logger.debug("Cleaning up server resources")
         if not self._should_exit:
             self._should_exit = True
             logger.debug("Initiating server shutdown")
             self._shutdown_event.set()
 
             if hasattr(self.server, 'shutdown'):
+                logger.debug("Shutting down server")
                 await self.server.shutdown()
 
             # Ensure all connections are closed
@@ -277,11 +281,17 @@ def serve(
 
         init_db_sync()
 
+
+        # Check certificates and create CA if necessary
+        ca = CertificateAuthority.get_instance()
+        ca.ensure_certificates_exist()
+
         # Set up event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         app = init_app()
+
         # Run the server
         try:
             loop.run_until_complete(run_servers(cfg, app))
@@ -333,16 +343,46 @@ async def run_servers(cfg: Config, app) -> None:
             log_config=None,  # Default logging configuration
         )
 
-        # Create and start Uvicorn server
         server = UvicornServer(uvicorn_config, Server(config=uvicorn_config))
 
-        # Set up signal handlers
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(server.cleanup()))
+        # Initialize CopilotProvider and call run_proxy_server
+        copilot_provider = CopilotProvider(cfg)
+        # copilot_provider.run_proxy_server(cfg.proxy_port)
 
-        # Start server
-        await server.serve()
+
+        tasks = [
+            asyncio.create_task(server.serve()), # Uvicorn server
+            asyncio.create_task(copilot_provider.run_proxy_server()) # Proxy server
+        ]
+
+        # Create and start Uvicorn server
+        # server = UvicornServer(uvicorn_config, Server(config=uvicorn_config))
+
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            logger.info("Server received cancellation")
+        except Exception as e:
+            logger.exception("Unexpected error occurred during server execution", exc_info=e)
+        finally:
+            await server.cleanup()
+            # Cleanup
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                pass
+
+
+        # Set up signal handlers
+        # loop = asyncio.get_running_loop()
+        # for sig in (signal.SIGTERM, signal.SIGINT):
+        #     loop.add_signal_handler(sig, lambda: asyncio.create_task(server.cleanup()))
+
+        # # Start server
+        # await server.serve()
 
     except Exception as e:
         logger.exception("Error running servers")

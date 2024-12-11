@@ -1,15 +1,10 @@
 import logging
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict
-from ..config.settings import settings
 
 def setup_logging() -> logging.Logger:
     """Setup logging configuration"""
-    # Create logs directory if it doesn't exist
-    log_dir = Path(settings.LOG_DIR)
-    log_dir.mkdir(exist_ok=True)
 
     # Create logger
     logger = logging.getLogger("proxy_pilot")
@@ -25,14 +20,6 @@ def setup_logging() -> logging.Logger:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-
-    # Create file handler
-    file_handler = logging.FileHandler(
-        log_dir / "proxy_pilot.log",
-        encoding='utf-8'
-    )
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
 
     return logger
 

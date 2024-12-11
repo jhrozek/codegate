@@ -1,5 +1,5 @@
-from codegate.providers.completion.base import ProxyProtocol
+from codegate.providers.copilot.provider import CopilotProvider
 
 __all__ = [
-    "ProxyProtocol",
+    "CopilotProvider",
 ]
