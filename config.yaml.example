@@ -26,6 +26,22 @@ provider_urls:
 # --openai-url
 # --anthropic-url
 
+# Certificate configuration
+certs_dir: "./certs"  # Directory for certificate files
+ca_cert: "ca.crt"     # CA certificate file name
+ca_key: "ca.key"      # CA key file name
+server_cert: "server.crt"  # Server certificate file name
+server_key: "server.key"   # Server key file name
+
+# Note: Certificate configuration can be overridden by:
+# 1. CLI arguments (--certs-dir, --ca-cert, --ca-key, --server-cert, --server-key)
+# 2. Environment variables:
+#    CODEGATE_CERTS_DIR
+#    CODEGATE_CA_CERT
+#    CODEGATE_CA_KEY
+#    CODEGATE_SERVER_CERT
+#    CODEGATE_SERVER_KEY
+
 # Embedding model configuration
 
 ####

@@ -127,6 +127,36 @@ def show_prompts(prompts: Optional[Path]) -> None:
     default="all-minilm-L6-v2-q5_k_m.gguf",
     help="Name of the model to use for embeddings",
 )
+@click.option(
+    "--certs-dir",
+    type=str,
+    default=None,
+    help="Directory for certificate files (default: ./certs)",
+)
+@click.option(
+    "--ca-cert",
+    type=str,
+    default=None,
+    help="CA certificate file name (default: ca.crt)",
+)
+@click.option(
+    "--ca-key",
+    type=str,
+    default=None,
+    help="CA key file name (default: ca.key)",
+)
+@click.option(
+    "--server-cert",
+    type=str,
+    default=None,
+    help="Server certificate file name (default: server.crt)",
+)
+@click.option(
+    "--server-key",
+    type=str,
+    default=None,
+    help="Server key file name (default: server.key)",
+)
 def serve(
     port: Optional[int],
     host: Optional[str],
@@ -140,6 +170,11 @@ def serve(
     ollama_url: Optional[str],
     model_base_path: Optional[str],
     embedding_model: Optional[str],
+    certs_dir: Optional[str],
+    ca_cert: Optional[str],
+    ca_key: Optional[str],
+    server_cert: Optional[str],
+    server_key: Optional[str],
 ) -> None:
     """Start the codegate server."""
     logger = None
@@ -166,6 +201,11 @@ def serve(
             cli_provider_urls=cli_provider_urls,
             model_base_path=model_base_path,
             embedding_model=embedding_model,
+            certs_dir=certs_dir,
+            ca_cert=ca_cert,
+            ca_key=ca_key,
+            server_cert=server_cert,
+            server_key=server_key,
         )
 
         setup_logging(cfg.log_level, cfg.log_format)
@@ -181,6 +221,7 @@ def serve(
                 "provider_urls": cfg.provider_urls,
                 "model_base_path": cfg.model_base_path,
                 "embedding_model": cfg.embedding_model,
+                "certs_dir": cfg.certs_dir,
             },
         )
 

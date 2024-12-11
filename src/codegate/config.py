@@ -42,6 +42,13 @@ class Config:
     chat_model_n_gpu_layers: int = -1
     embedding_model: str = "all-minilm-L6-v2-q5_k_m.gguf"
 
+    # Certificate configuration
+    certs_dir: str = "./certs"
+    ca_cert: str = "ca.crt"
+    ca_key: str = "ca.key"
+    server_cert: str = "server.crt"
+    server_key: str = "server.key"
+
     # Provider URLs with defaults
     provider_urls: Dict[str, str] = field(default_factory=lambda: DEFAULT_PROVIDER_URLS.copy())
 
@@ -124,6 +131,11 @@ class Config:
                     "chat_model_n_gpu_layers", cls.chat_model_n_gpu_layers
                 ),
                 embedding_model=config_data.get("embedding_model", cls.embedding_model),
+                certs_dir=config_data.get("certs_dir", cls.certs_dir),
+                ca_cert=config_data.get("ca_cert", cls.ca_cert),
+                ca_key=config_data.get("ca_key", cls.ca_key),
+                server_cert=config_data.get("server_cert", cls.server_cert),
+                server_key=config_data.get("server_key", cls.server_key),
                 prompts=prompts_config,
                 provider_urls=provider_urls,
             )
@@ -156,6 +168,18 @@ class Config:
                     os.environ["CODEGATE_PROMPTS_FILE"]
                 )  # noqa: E501
 
+            # Load certificate configuration from environment
+            if "CODEGATE_CERTS_DIR" in os.environ:
+                config.certs_dir = os.environ["CODEGATE_CERTS_DIR"]
+            if "CODEGATE_CA_CERT" in os.environ:
+                config.ca_cert = os.environ["CODEGATE_CA_CERT"]
+            if "CODEGATE_CA_KEY" in os.environ:
+                config.ca_key = os.environ["CODEGATE_CA_KEY"]
+            if "CODEGATE_SERVER_CERT" in os.environ:
+                config.server_cert = os.environ["CODEGATE_SERVER_CERT"]
+            if "CODEGATE_SERVER_KEY" in os.environ:
+                config.server_key = os.environ["CODEGATE_SERVER_KEY"]
+
             # Load provider URLs from environment variables
             for provider in DEFAULT_PROVIDER_URLS.keys():
                 env_var = f"CODEGATE_PROVIDER_{provider.upper()}_URL"
@@ -178,6 +202,11 @@ class Config:
         cli_provider_urls: Optional[Dict[str, str]] = None,
         model_base_path: Optional[str] = None,
         embedding_model: Optional[str] = None,
+        certs_dir: Optional[str] = None,
+        ca_cert: Optional[str] = None,
+        ca_key: Optional[str] = None,
+        server_cert: Optional[str] = None,
+        server_key: Optional[str] = None,
     ) -> "Config":
         """Load configuration with priority resolution.
 
@@ -197,6 +226,11 @@ class Config:
             cli_provider_urls: Optional dict of provider URLs from CLI
             model_base_path: Optional path to model base directory
             embedding_model: Optional name of the model to use for embeddings
+            certs_dir: Optional path to certificates directory
+            ca_cert: Optional path to CA certificate
+            ca_key: Optional path to CA key
+            server_cert: Optional path to server certificate
+            server_key: Optional path to server key
 
         Returns:
             Config: Resolved configuration
@@ -231,6 +265,16 @@ class Config:
             config.model_base_path = env_config.model_base_path
         if "CODEGATE_EMBEDDING_MODEL" in os.environ:
             config.embedding_model = env_config.embedding_model
+        if "CODEGATE_CERTS_DIR" in os.environ:
+            config.certs_dir = env_config.certs_dir
+        if "CODEGATE_CA_CERT" in os.environ:
+            config.ca_cert = env_config.ca_cert
+        if "CODEGATE_CA_KEY" in os.environ:
+            config.ca_key = env_config.ca_key
+        if "CODEGATE_SERVER_CERT" in os.environ:
+            config.server_cert = env_config.server_cert
+        if "CODEGATE_SERVER_KEY" in os.environ:
+            config.server_key = env_config.server_key
 
         # Override provider URLs from environment
         for provider, url in env_config.provider_urls.items():
@@ -253,6 +297,16 @@ class Config:
             config.model_base_path = model_base_path
         if embedding_model is not None:
             config.embedding_model = embedding_model
+        if certs_dir is not None:
+            config.certs_dir = certs_dir
+        if ca_cert is not None:
+            config.ca_cert = ca_cert
+        if ca_key is not None:
+            config.ca_key = ca_key
+        if server_cert is not None:
+            config.server_cert = server_cert
+        if server_key is not None:
+            config.server_key = server_key
 
         # Set the __config class attribute
         Config.__config = config

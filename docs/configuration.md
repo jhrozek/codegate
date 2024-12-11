@@ -21,6 +21,12 @@ The configuration system in Codegate is managed through the `Config` class in `c
   - OpenAI: "https://api.openai.com/v1"
   - Anthropic: "https://api.anthropic.com/v1"
   - Ollama: "http://localhost:11434"
+- Certificate Configuration:
+  - Certs Directory: "./certs"
+  - CA Certificate: "ca.crt"
+  - CA Key: "ca.key"
+  - Server Certificate: "server.crt"
+  - Server Key: "server.key"
 
 ## Configuration Methods
 
@@ -43,6 +49,11 @@ provider_urls:
   openai: "https://api.openai.com/v1"
   anthropic: "https://api.anthropic.com/v1"
   ollama: "http://localhost:11434"
+certs_dir: "./certs"
+ca_cert: "ca.crt"
+ca_key: "ca.key"
+server_cert: "server.crt"
+server_key: "server.key"
 ```
 
 ### From Environment Variables
@@ -58,6 +69,11 @@ Environment variables are automatically loaded with these mappings:
 - `CODEGATE_PROVIDER_OPENAI_URL`: OpenAI provider URL
 - `CODEGATE_PROVIDER_ANTHROPIC_URL`: Anthropic provider URL
 - `CODEGATE_PROVIDER_OLLAMA_URL`: Ollama provider URL
+- `CODEGATE_CERTS_DIR`: Directory for certificate files
+- `CODEGATE_CA_CERT`: CA certificate file name
+- `CODEGATE_CA_KEY`: CA key file name
+- `CODEGATE_SERVER_CERT`: Server certificate file name
+- `CODEGATE_SERVER_KEY`: Server key file name
 
 ```python
 config = Config.from_env()
@@ -94,6 +110,33 @@ Provider URLs can be configured in several ways:
 Note: 
 - For the vLLM provider, the /v1 path is automatically appended to the base URL if not present.
 - For the Ollama provider, the /api path is automatically appended to the base URL if not present.
+
+### Certificate Configuration
+
+Certificate files can be configured in several ways:
+
+1. In Configuration File:
+   ```yaml
+   certs_dir: "./certs"
+   ca_cert: "ca.crt"
+   ca_key: "ca.key"
+   server_cert: "server.crt"
+   server_key: "server.key"
+   ```
+
+2. Via Environment Variables:
+   ```bash
+   export CODEGATE_CERTS_DIR=./certs
+   export CODEGATE_CA_CERT=ca.crt
+   export CODEGATE_CA_KEY=ca.key
+   export CODEGATE_SERVER_CERT=server.crt
+   export CODEGATE_SERVER_KEY=server.key
+   ```
+
+3. Via CLI Flags:
+   ```bash
+   codegate serve --certs-dir ./certs --ca-cert ca.crt --ca-key ca.key --server-cert server.crt --server-key server.key
+   ```
 
 ### Log Levels
 

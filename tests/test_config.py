@@ -16,6 +16,12 @@ def test_default_config(default_config: Config) -> None:
     assert default_config.log_level == LogLevel.INFO
     assert default_config.log_format == LogFormat.JSON
     assert default_config.provider_urls == DEFAULT_PROVIDER_URLS
+    # Test default certificate configuration
+    assert default_config.certs_dir == "./certs"
+    assert default_config.ca_cert == "ca.crt"
+    assert default_config.ca_key == "ca.key"
+    assert default_config.server_cert == "server.crt"
+    assert default_config.server_key == "server.key"
 
 
 def test_config_from_file(temp_config_file: Path) -> None:
@@ -64,12 +70,22 @@ def test_config_priority_resolution(temp_config_file: Path, env_vars: None) -> N
         cli_log_level="WARNING",
         cli_log_format="TEXT",
         cli_provider_urls={"vllm": "https://custom.vllm.server"},
+        certs_dir="./custom-certs",
+        ca_cert="custom-ca.crt",
+        ca_key="custom-ca.key",
+        server_cert="custom-server.crt",
+        server_key="custom-server.key",
     )
     assert config.port == 8080
     assert config.host == "example.com"
     assert config.log_level == LogLevel.WARNING
     assert config.log_format == LogFormat.TEXT
     assert config.provider_urls["vllm"] == "https://custom.vllm.server"
+    assert config.certs_dir == "./custom-certs"
+    assert config.ca_cert == "custom-ca.crt"
+    assert config.ca_key == "custom-ca.key"
+    assert config.server_cert == "custom-server.crt"
+    assert config.server_key == "custom-server.key"
 
     # Env vars should override config file
     config = Config.load(config_path=temp_config_file)
@@ -114,6 +130,54 @@ def test_provider_urls_from_env() -> None:
         assert config.provider_urls["openai"] == DEFAULT_PROVIDER_URLS["openai"]
     finally:
         del os.environ["CODEGATE_PROVIDER_VLLM_URL"]
+
+
+def test_certificate_config_from_file(tmp_path: Path) -> None:
+    """Test loading certificate configuration from file."""
+    config_file = tmp_path / "config.yaml"
+    cert_config = {
+        "certs_dir": "./custom-certs",
+        "ca_cert": "custom-ca.crt",
+        "ca_key": "custom-ca.key",
+        "server_cert": "custom-server.crt",
+        "server_key": "custom-server.key",
+    }
+    with open(config_file, "w") as f:
+        yaml.dump(cert_config, f)
+
+    config = Config.from_file(config_file)
+    assert config.certs_dir == cert_config["certs_dir"]
+    assert config.ca_cert == cert_config["ca_cert"]
+    assert config.ca_key == cert_config["ca_key"]
+    assert config.server_cert == cert_config["server_cert"]
+    assert config.server_key == cert_config["server_key"]
+
+
+def test_certificate_config_from_env() -> None:
+    """Test loading certificate configuration from environment variables."""
+    os.environ.update({
+        "CODEGATE_CERTS_DIR": "./env-certs",
+        "CODEGATE_CA_CERT": "env-ca.crt",
+        "CODEGATE_CA_KEY": "env-ca.key",
+        "CODEGATE_SERVER_CERT": "env-server.crt",
+        "CODEGATE_SERVER_KEY": "env-server.key",
+    })
+    try:
+        config = Config.from_env()
+        assert config.certs_dir == "./env-certs"
+        assert config.ca_cert == "env-ca.crt"
+        assert config.ca_key == "env-ca.key"
+        assert config.server_cert == "env-server.crt"
+        assert config.server_key == "env-server.key"
+    finally:
+        for key in [
+            "CODEGATE_CERTS_DIR",
+            "CODEGATE_CA_CERT",
+            "CODEGATE_CA_KEY",
+            "CODEGATE_SERVER_CERT",
+            "CODEGATE_SERVER_KEY",
+        ]:
+            os.environ.pop(key, None)
 
 
 def test_invalid_log_level() -> None:

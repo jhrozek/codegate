@@ -44,6 +44,11 @@ port: 8989
 host: localhost
 log_level: DEBUG
 log_format: JSON
+certs_dir: "./test-certs"
+ca_cert: "test-ca.crt"
+ca_key: "test-ca.key"
+server_cert: "test-server.crt"
+server_key: "test-server.key"
 """
     )
     return config_file
@@ -76,6 +81,7 @@ def test_serve_default_options(
             "log_format": "JSON",
             "prompts_loaded": 7,
             "provider_urls": DEFAULT_PROVIDER_URLS,
+            "certs_dir": "./certs",  # Default certificate directory
         }
 
         # Retrieve the actual call arguments
@@ -108,6 +114,16 @@ def test_serve_custom_options(
                 "DEBUG",
                 "--log-format",
                 "TEXT",
+                "--certs-dir",
+                "./custom-certs",
+                "--ca-cert",
+                "custom-ca.crt",
+                "--ca-key",
+                "custom-ca.key",
+                "--server-cert",
+                "custom-server.crt",
+                "--server-key",
+                "custom-server.key",
             ],
         )
 
@@ -125,6 +141,7 @@ def test_serve_custom_options(
             "log_format": "TEXT",
             "prompts_loaded": 7,  # Default prompts are loaded
             "provider_urls": DEFAULT_PROVIDER_URLS,
+            "certs_dir": "./custom-certs",
         }
 
         # Check if one of the calls matches the expected subset
@@ -172,6 +189,7 @@ def test_serve_with_config_file(
             "log_format": "JSON",
             "prompts_loaded": 7,  # Default prompts are loaded
             "provider_urls": DEFAULT_PROVIDER_URLS,
+            "certs_dir": "./test-certs",  # From config file
         }
 
         # Check if one of the calls matches the expected subset
@@ -214,6 +232,16 @@ def test_serve_priority_resolution(
                 "ERROR",
                 "--log-format",
                 "TEXT",
+                "--certs-dir",
+                "./cli-certs",
+                "--ca-cert",
+                "cli-ca.crt",
+                "--ca-key",
+                "cli-ca.key",
+                "--server-cert",
+                "cli-server.crt",
+                "--server-key",
+                "cli-server.key",
             ],
         )
 
@@ -231,6 +259,56 @@ def test_serve_priority_resolution(
             "log_format": "TEXT",
             "prompts_loaded": 7,  # Default prompts are loaded
             "provider_urls": DEFAULT_PROVIDER_URLS,
+            "certs_dir": "./cli-certs",  # CLI args override config file
+        }
+
+        # Check if one of the calls matches the expected subset
+        assert any(
+            all(expected_extra[k] == actual_extra.get(k) for k in expected_extra)
+            for actual_extra in calls
+        )
+        mock_run.assert_called_once()
+
+
+def test_serve_certificate_options(
+    cli_runner: CliRunner, mock_logging: Any, mock_setup_logging: Any
+) -> None:
+    """Test serve command with certificate options."""
+    with patch("uvicorn.run") as mock_run:
+        logger_instance = MagicMock()
+        mock_logging.return_value = logger_instance
+        result = cli_runner.invoke(
+            cli,
+            [
+                "serve",
+                "--certs-dir",
+                "./custom-certs",
+                "--ca-cert",
+                "custom-ca.crt",
+                "--ca-key",
+                "custom-ca.key",
+                "--server-cert",
+                "custom-server.crt",
+                "--server-key",
+                "custom-server.key",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_setup_logging.assert_called_once_with(LogLevel.INFO, LogFormat.JSON)
+        mock_logging.assert_called_with("codegate")
+
+        # Retrieve the actual call arguments
+        calls = [call[1]["extra"] for call in logger_instance.info.call_args_list]
+
+        expected_extra = {
+            "host": "localhost",
+            "port": 8989,
+            "log_level": "INFO",
+            "log_format": "JSON",
+            "prompts_loaded": 6,
+            "provider_urls": DEFAULT_PROVIDER_URLS,
+            "certs_dir": "./custom-certs",
         }
 
         # Check if one of the calls matches the expected subset
