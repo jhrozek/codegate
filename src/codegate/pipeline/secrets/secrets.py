@@ -186,6 +186,8 @@ class CodegateSecrets(PipelineStep):
         total_redacted = 0
 
         # Process all messages
+        print(f"=====> Request: {new_request}")
+        print(f"====> Messages: {new_request['messages']}")
         for i, message in enumerate(new_request["messages"]):
             if "content" in message and message["content"]:
                 # Protect the text

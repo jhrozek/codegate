@@ -25,32 +25,41 @@ CHUNK_SIZE = 64 * 1024  # 64KB
 class SSEProcessor:
     def __init__(self):
         self.buffer = ""
+        self.initial_chunk = True
+        self.chunk_size = None  # Store the original chunk size
+        self.size_written = False
 
-    def process_chunk(self, chunk: bytes):
-        # Decode and add to buffer
-        self.buffer += chunk.decode('utf-8')
+    def process_chunk(self, chunk: bytes) -> list:
+        # Skip any chunk size lines (hex number followed by \r\n)
+        try:
+            chunk_str = chunk.decode('utf-8')
+            lines = chunk_str.split('\r\n')
+            # Skip lines that look like chunk sizes (hex numbers)
+            data_lines = [line for line in lines if not all(c in '0123456789abcdefABCDEF' for c in line.strip())]
+            self.buffer += '\n'.join(data_lines)
+        except UnicodeDecodeError:
+            print(f"Failed to decode chunk")
 
-        # Process complete records
         records = []
         while True:
-            # Find next complete record
             record_end = self.buffer.find('\n\n')
             if record_end == -1:
+                print(f"REMAINING BUFFER {self.buffer}")
                 break
 
-            # Extract record
             record = self.buffer[:record_end]
-            self.buffer = self.buffer[record_end + 2:]  # +2 for \n\n
+            self.buffer = self.buffer[record_end + 2:]
 
-            # Process only data: lines
             if record.startswith('data: '):
-                try:
-                    # Remove 'data: ' prefix and parse JSON
-                    json_str = record[6:]  # len('data: ') == 6
-                    data = json.loads(json_str)
-                    records.append(data)
-                except json.JSONDecodeError:
-                    print(f"Failed to parse JSON: {json_str}")
+                data_content = record[6:]
+                if data_content.strip() == '[DONE]':
+                    records.append({'type': 'done'})
+                else:
+                    try:
+                        data = json.loads(data_content)
+                        records.append({'type': 'data', 'content': data})
+                    except json.JSONDecodeError:
+                        print(f"Failed to parse JSON: {data_content}")
 
         return records
 
@@ -369,7 +378,7 @@ class CopilotProvider(asyncio.Protocol):
             request = json_body,
             provider = "github-copilot",
             prompt_id = request_id,
-            model = json_body.get("model", "model_name"),
+            model = "model_name",   # Replace with actual model if needed
             api_key = None,
         )
 
@@ -630,7 +639,18 @@ class CopilotProxyTargetProtocol(asyncio.Protocol):
         self.proxy = proxy
         self.transport: Optional[asyncio.Transport] = None
         self.sse_processor = None
-        self.buffer = b""
+        self.headers_sent = False
+
+        # Debug buffers
+        self.raw_buffer = bytearray()
+        self.processed_buffer = bytearray()
+
+    def _proxy_transport_write(self, data: bytes):
+        self.processed_buffer.extend(data)
+        self.proxy.transport.write(data)
+        print("------ WRITE DATA START")
+        print(data)
+        print("------ WRITE DATA END")
 
     def connection_made(self, transport: asyncio.Transport):
         logger.debug(f"Connection made to target {self.proxy.target_host}:{self.proxy.target_port}")
@@ -638,35 +658,81 @@ class CopilotProxyTargetProtocol(asyncio.Protocol):
         self.proxy.target_transport = transport
 
     def _process_chunk(self, chunk: bytes):
-        if self.sse_processor is None:
-            self.buffer += chunk
+        records = self.sse_processor.process_chunk(chunk)
 
-            # Check if we have complete headers (ends with \r\n\r\n)
-            header_end = self.buffer.find(b'\r\n\r\n')
-            if header_end != -1:
-                headers = self.buffer[:header_end].decode('utf-8')
-
-                # Check if this is an SSE response
-                if ('Content-Type: application/json' in headers and
-                        'Transfer-Encoding: chunked' in headers):
-                    print("THIS IS A SSE RESPONSE")
-                else:
-                    # Not SSE - pass through all buffered data
-                    data_to_send = self.buffer
-                    self.buffer = b""
-                    return data_to_send
-            return None  # Still collecting headers
+        for record in records:
+            if record['type'] == 'done':
+                sse_data = b'data: [DONE]\n\n'
+                # Add chunk size for DONE message too
+                chunk_size = hex(len(sse_data))[2:] + '\r\n'
+                self._proxy_transport_write(chunk_size.encode())
+                self._proxy_transport_write(sse_data)
+                self._proxy_transport_write(b'\r\n')
+                # Now send the final zero chunk
+                self._proxy_transport_write(b'0\r\n\r\n')
+            else:
+                sse_data = f"data: {json.dumps(record['content'])}\n\n".encode('utf-8')
+                chunk_size = hex(len(sse_data))[2:] + '\r\n'
+                self._proxy_transport_write(chunk_size.encode())
+                self._proxy_transport_write(sse_data)
+                self._proxy_transport_write(b'\r\n')
 
     def data_received(self, data: bytes):
         logger.debug(f"Data received from target {self.proxy.target_host}:{self.proxy.target_port}")
+
+        self.raw_buffer.extend(data)  # Store original incoming data
+        with open("raw_buffer.txt", "wb") as f:
+            f.write(self.raw_buffer)
+
+        if len(self.proxy.context_tracking) > 0 and self.sse_processor is None:
+             logger.debug("Tracking context for pipeline processing")
+             self.sse_processor = SSEProcessor()
+
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.log_decrypted_data(data, "Server to Client")
+
+            # DEBUGGING
+            #self.proxy.transport.write(data)
+
             print("------ TARGET DATA START")
             print(data)
             print("------ TARGET DATA END")
-            self.proxy.transport.write(data)
+
+            if not self.sse_processor:
+                # Pass through non-SSE data unchanged
+                logger.debug("No context tracked, pass through")
+                print("------ WRITE DATA START")
+                print(data)
+                print("------ WRITE DATA END")
+                self._proxy_transport_write(data)
+                return
+
+            # Check if this is the first chunk with headers
+            if not self.headers_sent:
+                header_end = data.find(b'\r\n\r\n')
+                if header_end != -1:
+                    self.headers_sent = True
+                    # Send headers first
+                    headers = data[:header_end + 4]
+                    print("------ WRITE HEADERS START")
+                    print(headers)
+                    print("------ WRITE HEADERS END")
+                    self._proxy_transport_write(headers)
+                    logger.debug(f"Headers sent: {headers}")
+
+                    data = data[header_end + 4:]
+
+            self._process_chunk(data)
 
     def connection_lost(self, exc):
+        print("------ RAW BUFFER START")
+        print(self.raw_buffer.decode('utf-8'))
+        print("------ RAW BUFFER END")
+
+        print("------ PROCESSED BUFFER START")
+        print(self.processed_buffer.decode('utf-8'))
+        print("------ PROCESSED BUFFER END")
+
         logger.debug(f"Connection lost from target {self.proxy.target_host}:{self.proxy.target_port}")
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.transport.close()
