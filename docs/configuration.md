@@ -12,6 +12,7 @@ The configuration system in Codegate is managed through the `Config` class in `c
 ## Default Configuration Values
 
 - Port: 8989
+- Proxy Port: 8990
 - Host: "localhost"
 - Log Level: "INFO"
 - Log Format: "JSON"
@@ -41,6 +42,7 @@ config = Config.from_file("config.yaml")
 Example config.yaml:
 ```yaml
 port: 8989
+proxy_port: 8990
 host: localhost
 log_level: INFO
 log_format: JSON
@@ -61,6 +63,7 @@ server_key: "server.key"
 Environment variables are automatically loaded with these mappings:
 
 - `CODEGATE_APP_PORT`: Server port
+- `CODEGATE_APP_PROXY_PORT`: Server proxy port
 - `CODEGATE_APP_HOST`: Server host
 - `CODEGATE_APP_LOG_LEVEL`: Logging level
 - `CODEGATE_LOG_FORMAT`: Log format
@@ -80,6 +83,29 @@ config = Config.from_env()
 ```
 
 ## Configuration Options
+
+### Network Settings
+
+Network settings can be configured in several ways:
+
+1. In Configuration File:
+   ```yaml
+   port: 8989           # Port to listen on (1-65535)
+   proxy_port: 8990     # Proxy port to listen on (1-65535)
+   host: "localhost"    # Host to bind to
+   ```
+
+2. Via Environment Variables:
+   ```bash
+   export CODEGATE_APP_PORT=8989
+   export CODEGATE_APP_PROXY_PORT=8990
+   export CODEGATE_APP_HOST=localhost
+   ```
+
+3. Via CLI Flags:
+   ```bash
+   codegate serve --port 8989 --proxy-port 8990 --host localhost
+   ```
 
 ### Provider URLs
 
@@ -203,6 +229,7 @@ prompt = config.prompts.prompt_name
 The configuration system uses a custom `ConfigurationError` exception for handling configuration-related errors, such as:
 
 - Invalid port numbers (must be between 1 and 65535)
+- Invalid proxy port numbers (must be between 1 and 65535)
 - Invalid log levels
 - Invalid log formats
 - YAML parsing errors

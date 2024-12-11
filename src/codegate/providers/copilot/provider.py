@@ -1,5 +1,4 @@
 import asyncio
-import socket
 import re
 import ssl
 from typing import Dict, Optional, Tuple, Union
@@ -371,8 +370,8 @@ class ProxyProtocol(asyncio.Protocol):
             logger.debug("Creating SSL context for proxy server")
             ssl_context = ca.create_ssl_context()
             server = await cls.create_proxy_server(
-                settings.HOST,
-                settings.PORT,
+                Config.get_config().host,
+                Config.get_config().proxy_port,
                 ssl_context
             )
             logger.debug("Proxy server created")
