@@ -1,18 +1,26 @@
 import asyncio
 import socket
+import re
 import ssl
 from typing import Dict, Optional, Tuple, Union
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
+import structlog
 from fastapi import Request, Response, WebSocket
 
-from ..config.settings import VALIDATED_ROUTES, settings
-from ..core.logging import log_error, log_proxy_forward, logger
-from .config.settings import settings
-from .core.logging import logger
-from .core.security import ca, create_ssl_context
-from .utils.proxy import get_target_url
+# from ..config.settings import VALIDATED_ROUTES, settings
+from codegate.config import Config
+
+# from ..core.logging import log_error, log_proxy_forward, logger
+from codegate.codegate_logging import log_error, log_proxy_forward, logger
+
+# from .core.security import ca, create_ssl_context
+from codegate.ca.codegate_ca import CertificateAuthority
+
+# from .utils.proxy import get_target_url
+
+logger = structlog.get_logger("codegate")
 
 # Increase buffer sizes
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB
@@ -20,6 +28,7 @@ CHUNK_SIZE = 64 * 1024  # 64KB
 
 class ProxyProtocol(asyncio.Protocol):
     def __init__(self, loop):
+        logger.debug("Initializing ProxyProtocol class: ProxyProtocol")
         self.loop = loop
         self.transport: Optional[asyncio.Transport] = None
         self.target_transport: Optional[asyncio.Transport] = None
@@ -41,11 +50,13 @@ class ProxyProtocol(asyncio.Protocol):
         self.decrypted_data = bytearray()
 
     def connection_made(self, transport: asyncio.Transport):
+        logger.debug("Client connected fn: connection_made")
         self.transport = transport
         self.peername = transport.get_extra_info('peername')
-        logger.info(f"Client connected from {self.peername}")
+        logger.debug(f"Client connected from {self.peername}")
 
     def extract_path(self, full_path: str) -> str:
+        logger.debug(f"Extracting path from {full_path} fn: extract_path")
         if full_path.startswith('http://') or full_path.startswith('https://'):
             parsed = urlparse(full_path)
             path = parsed.path
@@ -57,49 +68,54 @@ class ProxyProtocol(asyncio.Protocol):
         return full_path
 
     def parse_headers(self) -> bool:
+        logger.debug("Parsing headers fn: parse_headers")
         try:
             if b'\r\n\r\n' not in self.buffer:
                 return False
 
             headers_end = self.buffer.index(b'\r\n\r\n')
             headers = self.buffer[:headers_end].split(b'\r\n')
-            
+
             request = headers[0].decode('utf-8')
             self.method, full_path, self.version = request.split(' ')
-            
+
             self.original_path = full_path
-            
+
             if self.method == 'CONNECT':
+                logger.debug(f"CONNECT request to {full_path}")
                 self.target = full_path
                 self.path = ""
             else:
+                logger.debug(f"Request: {self.method} {full_path} {self.version}")
                 self.path = self.extract_path(full_path)
-            
-            import re
+
             self.headers = [header.decode('utf-8') for header in headers[1:]]
 
-            logger.info("=== Inbound Request ===")
-            logger.info(f"Method: {self.method}")
-            logger.info(f"Original Path: {self.original_path}")
-            logger.info(f"Extracted Path: {self.path}")
-            logger.info(f"Version: {self.version}")
-            logger.info("Headers:")
+            logger.debug("=" * 40)
+            logger.debug("=== Inbound Request ===")
+            logger.debug(f"Method: {self.method}")
+            logger.debug(f"Original Path: {self.original_path}")
+            logger.debug(f"Extracted Path: {self.path}")
+            logger.debug(f"Version: {self.version}")
+            logger.debug("Headers:")
 
+            logger.debug("=" * 40)
+
+            logger.debug("Searching for proxy-ep header value")
             proxy_ep_value = None
 
             for header in self.headers:
-                logger.info(f"  {header}")
+                logger.debug(f"  {header}")
                 if header.lower().startswith("authorization:"):
                     match = re.search(r"proxy-ep=([^;]+)", header)
                     if match:
                         proxy_ep_value = match.group(1)
 
-            logger.info("=====================")
-
             if proxy_ep_value:
-                logger.info(f"Extracted proxy-ep value: {proxy_ep_value}")
+                logger.debug(f"Extracted proxy-ep value: {proxy_ep_value}")
             else:
-                logger.info("proxy-ep value not found.")
+                logger.debug("proxy-ep value not found.")
+            logger.debug("=" * 40)
 
             return True
         except Exception as e:
@@ -109,29 +125,35 @@ class ProxyProtocol(asyncio.Protocol):
     def log_decrypted_data(self, data: bytes, direction: str):
         try:
             decoded = data.decode('utf-8')
-            logger.info(f"=== Decrypted {direction} Data ===")
-            logger.info(decoded)
-            logger.info("=" * 40)
+            logger.debug(f"=== Decrypted {direction} Data ===")
+            logger.debug(decoded)
+            logger.debug("=" * 40)
         except UnicodeDecodeError:
-            logger.info(f"=== Decrypted {direction} Data (hex) ===")
-            logger.info(data.hex())
-            logger.info("=" * 40)
+            logger.debug(f"=== Decrypted {direction} Data (hex) ===")
+            logger.debug(data.hex())
+            logger.debug("=" * 40)
 
     async def handle_http_request(self):
+        
+        logger.debug("Handling HTTP request fn: handle_http_request")
+        logger.debug("=" * 40)
         logger.debug(f"Method: {self.method}")
+        logger.debug(f"Searched Path: {self.path} in target URL")
         try:
             target_url = await get_target_url(self.path)
+            logger.debug(f"Target URL: {target_url}")
             if not target_url:
                 self.send_error_response(404, b"Not Found")
                 return
-            logger.info(f"target URL {target_url}")
-            
+            logger.debug(f"target URL {target_url}")
+
             parsed_url = urlparse(target_url)
-            logger.info(f"Parsed URL {parsed_url}")
+            logger.debug(f"Parsed URL {parsed_url}")
             self.target_host = parsed_url.hostname
             self.target_port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
-
+            logger.debug("=" * 40)
             target_protocol = ProxyTargetProtocol(self)
+            logger.debug(f"Connecting to {self.target_host}:{self.target_port}")
             await self.loop.create_connection(
                 lambda: target_protocol,
                 self.target_host,
@@ -141,35 +163,41 @@ class ProxyProtocol(asyncio.Protocol):
 
             has_host = False
             new_headers = []
+
             for header in self.headers:
                 if header.lower().startswith('host:'):
                     has_host = True
                     new_headers.append(f"Host: {self.target_host}")
                 else:
                     new_headers.append(header)
-            
+
             if not has_host:
                 new_headers.append(f"Host: {self.target_host}")
 
             request_line = f"{self.method} /{self.path} {self.version}\r\n".encode()
+            logger.debug(f"Request Line: {request_line}")
             header_block = '\r\n'.join(new_headers).encode()
             headers = request_line + header_block + b'\r\n\r\n'
-            
+
             if self.target_transport:
+                logger.debug("=" * 40)
                 self.log_decrypted_data(headers, "Request")
                 self.target_transport.write(headers)
-                
+                logger.debug("=" * 40)
+
                 body_start = self.buffer.index(b'\r\n\r\n') + 4
                 body = self.buffer[body_start:]
-                
+
                 if body:
                     self.log_decrypted_data(body, "Request Body")
-                
+
                 for i in range(0, len(body), CHUNK_SIZE):
                     chunk = body[i:i + CHUNK_SIZE]
                     self.target_transport.write(chunk)
             else:
+                logger.debug("=" * 40)
                 logger.error("Target transport not available")
+                logger.debug("=" * 40)
                 self.send_error_response(502, b"Failed to establish target connection")
 
         except Exception as e:
@@ -177,6 +205,8 @@ class ProxyProtocol(asyncio.Protocol):
             self.send_error_response(502, str(e).encode())
 
     def data_received(self, data: bytes):
+        logger.debug(f"Data received from {self.peername} fn: data_received")
+
         try:
             if len(self.buffer) + len(data) > MAX_BUFFER_SIZE:
                 logger.error("Request too large")
@@ -191,8 +221,10 @@ class ProxyProtocol(asyncio.Protocol):
                     return
 
                 if self.method == 'CONNECT':
+                    logger.debug("Handling CONNECT request")
                     self.handle_connect()
                 else:
+                    logger.debug("Handling HTTP request")
                     asyncio.create_task(self.handle_http_request())
             elif self.target_transport and not self.target_transport.is_closing():
                 self.log_decrypted_data(data, "Client to Server")
@@ -208,18 +240,25 @@ class ProxyProtocol(asyncio.Protocol):
             if ':' in path:
                 self.target_host, port = path.split(':')
                 self.target_port = int(port)
-                logger.info(f"CONNECT request to {self.target_host}:{self.target_port}")
-                logger.info("Headers:")
+                logger.debug("=" * 40)
+                logger.debug(f"CONNECT request to {self.target_host}:{self.target_port}")
+                logger.debug("Headers:")
                 for header in self.headers:
-                    logger.info(f"  {header}")
-                
+                    logger.debug(f"  {header}")
+            
+                logger.debug("=" * 40)
                 cert_path, key_path = ca.get_domain_certificate(self.target_host)
-                
+
+                logger.debug(f"Setting up SSL context for {self.target_host}")
+                logger.debug(f"Using certificate: {cert_path}")
+                logger.debug(f"Using key: {key_path}")
+
                 self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 self.ssl_context.load_cert_chain(cert_path, key_path)
                 self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-                
+
                 self.is_connect = True
+                logger.debug("CONNECT handshake complete")
                 asyncio.create_task(self.connect_to_target())
                 self.handshake_done = True
             else:
@@ -230,6 +269,7 @@ class ProxyProtocol(asyncio.Protocol):
             self.send_error_response(502, str(e).encode())
 
     def send_error_response(self, status: int, message: bytes):
+        logger.debug(f"Sending error response: {status} {message} fn: send_error_response")
         response = (
             f"HTTP/1.1 {status} {self.get_status_text(status)}\r\n"
             f"Content-Length: {len(message)}\r\n"
@@ -241,6 +281,7 @@ class ProxyProtocol(asyncio.Protocol):
             self.transport.close()
 
     def get_status_text(self, status: int) -> str:
+        logger.debug(f"Getting status text for {status} fn: get_status_text")
         status_texts = {
             400: "Bad Request",
             404: "Not Found",
@@ -250,6 +291,7 @@ class ProxyProtocol(asyncio.Protocol):
         return status_texts.get(status, "Error")
 
     async def connect_to_target(self):
+        logger.debug(f"Connecting to target {self.target_host}:{self.target_port} fn: connect_to_target")
         try:
             if not self.target_host or not self.target_port:
                 raise ValueError("Target host and port not set")
@@ -257,12 +299,14 @@ class ProxyProtocol(asyncio.Protocol):
             logger.debug(f"Attempting to connect to {self.target_host}:{self.target_port}")
 
             # Create SSL context for target connection
+            logger.debug("Creating SSL context for target connection")
             target_ssl_context = ssl.create_default_context()
             # Don't verify certificates when connecting to target
             target_ssl_context.check_hostname = False
             target_ssl_context.verify_mode = ssl.CERT_NONE
 
             # Connect directly to target host
+            logger.debug(f"Connecting to {self.target_host}:{self.target_port}")
             target_protocol = ProxyTargetProtocol(self)
             transport, _ = await self.loop.create_connection(
                 lambda: target_protocol,
@@ -270,18 +314,20 @@ class ProxyProtocol(asyncio.Protocol):
                 self.target_port,
                 ssl=target_ssl_context
             )
-            
+
             logger.debug(f"Successfully connected to {self.target_host}:{self.target_port}")
-            
+
             # Send 200 Connection Established
             if self.transport and not self.transport.is_closing():
+                logger.debug("Sending 200 Connection Established response")
                 self.transport.write(
                     b'HTTP/1.1 200 Connection Established\r\n'
                     b'Proxy-Agent: ProxyPilot\r\n'
                     b'Connection: keep-alive\r\n\r\n'
                 )
-                
+
                 # Upgrade client connection to SSL
+                logger.debug("Upgrading client connection to SSL")
                 transport = await self.loop.start_tls(
                     self.transport,
                     self,
@@ -295,34 +341,42 @@ class ProxyProtocol(asyncio.Protocol):
             self.send_error_response(502, str(e).encode())
 
     def connection_lost(self, exc):
-        logger.info(f"Client disconnected from {self.peername}")
+        logger.debug(f"Connection lost from {self.peername} fn: connection_lost")
+        logger.debug(f"Client disconnected from {self.peername}")
         if self.target_transport and not self.target_transport.is_closing():
             self.target_transport.close()
 
 class ProxyTargetProtocol(asyncio.Protocol):
     def __init__(self, proxy: ProxyProtocol):
+        logger.debug("Initializing ProxyTargetProtocol class: ProxyTargetProtocol")
         self.proxy = proxy
         self.transport: Optional[asyncio.Transport] = None
 
     def connection_made(self, transport: asyncio.Transport):
+        logger.debug(f"Connection made to target {self.proxy.target_host}:{self.proxy.target_port}")
         self.transport = transport
         self.proxy.target_transport = transport
 
     def data_received(self, data: bytes):
+        logger.debug(f"Data received from target {self.proxy.target_host}:{self.proxy.target_port}")
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.log_decrypted_data(data, "Server to Client")
             self.proxy.transport.write(data)
 
     def connection_lost(self, exc):
+        logger.debug(f"Connection lost from target {self.proxy.target_host}:{self.proxy.target_port}")
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.transport.close()
 
 async def create_proxy_server(host: str, port: int, ssl_context: Optional[ssl.SSLContext] = None):
+    logger.debug(f"Creating proxy server on {host}:{port} fn: create_proxy_server")
     loop = asyncio.get_event_loop()
 
     def create_protocol():
+        logger.debug("Creating protocol for proxy server fn: create_protocol")
         return ProxyProtocol(loop)
 
+    logger.debug(f"Starting proxy server on {host}:{port}")
     server = await loop.create_server(
         create_protocol,
         host,
@@ -332,18 +386,20 @@ async def create_proxy_server(host: str, port: int, ssl_context: Optional[ssl.SS
         start_serving=True
     )
 
-    logger.info(f"Proxy server running on {host}:{port}")
+    logger.debug(f"Proxy server running on {host}:{port}")
     return server
 
 async def run_proxy_server():
+    logger.debug("Running proxy server fn: run_proxy_server")
     try:
+        logger.debug("Creating SSL context for proxy server")
         ssl_context = create_ssl_context()
         server = await create_proxy_server(
             settings.HOST,
             settings.PORT,
             ssl_context
         )
-
+        logger.debug("Proxy server created")
         async with server:
             await server.serve_forever()
 
@@ -351,21 +407,15 @@ async def run_proxy_server():
         logger.error(f"Proxy server error: {e}")
         raise
 
-
-
-
-
 async def get_target_url(path: str) -> Optional[str]:
     """Get target URL for the given path"""
-    logger.debug(f"Attempting to get target URL for path: {path}")
+    logger.debug(f"Attempting to get target URL for path: {path} fn: get_target_url")
 
-    # Special handling for Copilot completions endpoint
-    if '/v1/engines/copilot-codex/completions' in path:
-        logger.debug("Using special case for completions endpoint")
-        return 'https://proxy.enterprise.githubcopilot.com/v1/engines/copilot-codex/completions'
-    
+    logger.debug("=" * 40)
+    logger.debug("Validated routes:")
     for route in VALIDATED_ROUTES:
         if path == route.path:
+            logger.debug(f"  {route.path} -> {route.target}")
             logger.debug(f"Found exact path match: {path} -> {route.target}")
             return str(route.target)
 
@@ -374,6 +424,7 @@ async def get_target_url(path: str) -> Optional[str]:
         if path.startswith(route.path):
             # For prefix matches, keep the rest of the path
             remaining_path = path[len(route.path):]
+            logger.debug(f"Remaining path: {remaining_path}")
             # Make sure we don't end up with double slashes
             if remaining_path and remaining_path.startswith('/'):
                 remaining_path = remaining_path[1:]
@@ -386,25 +437,32 @@ async def get_target_url(path: str) -> Optional[str]:
 
 def prepare_headers(request: Union[Request, WebSocket], target_url: str) -> Dict[str, str]:
     """Prepare headers for the proxy request"""
+    logger.debug(f"Preparing headers for {target_url}")
     headers = {}
-    
+
     # Get headers from request
+    logger.debug("Request headers:")
     if isinstance(request, Request):
         request_headers = request.headers
     else:  # WebSocket
         request_headers = request.headers
-    
+
     # Copy preserved headers from the original request
+    logger.debug("=" * 40)
+    logger.debug("Preserved headers:")
     for header, value in request_headers.items():
         if header.lower() in [h.lower() for h in settings.PRESERVED_HEADERS]:
             headers[header] = value
+    logger.debug("=" * 40)
 
     # Add endpoint-specific headers
+    logger.debug("=" * 40)
+    logger.debug("Endpoint headers:")
     if isinstance(request, Request):
         path = urlparse(str(request.url)).path
         if path in settings.ENDPOINT_HEADERS:
             headers.update(settings.ENDPOINT_HEADERS[path])
-
+    
     # Set the Host header to match the target
     target_parsed = urlparse(target_url)
     headers['Host'] = target_parsed.netloc
@@ -415,6 +473,7 @@ def prepare_headers(request: Union[Request, WebSocket], target_url: str) -> Dict
 
     # Log headers for debugging
     logger.debug(f"Prepared headers for {target_url}: {headers}")
+    logger.debug("=" * 40)
 
     return headers
 
@@ -424,6 +483,7 @@ async def forward_request(
     client: httpx.AsyncClient
 ) -> Tuple[Response, int]:
     """Forward the request to the target URL"""
+    logger.debug(f"Forwarding request to {target_url} fn: forward_request")
     try:
         # Prepare headers
         headers = prepare_headers(request, target_url)
@@ -437,6 +497,7 @@ async def forward_request(
             logger.debug(f"Request body length: {len(body)} bytes")
 
         # Forward the request
+        logger.debug(f"Sending request to {target_url}")
         response = await client.request(
             method=request.method,
             url=target_url,
@@ -449,9 +510,11 @@ async def forward_request(
         logger.debug(f"Response headers: {dict(response.headers)}")
 
         # Log the forwarded request
+        logger.debug(f"Forwarded request to {target_url}: {response.status_code}")
         log_proxy_forward(target_url, request.method, response.status_code)
 
         # Create FastAPI response
+        logger.debug(f"Creating FastAPI response for {target_url}")
         return Response(
             content=response.content,
             status_code=response.status_code,
@@ -478,12 +541,16 @@ async def forward_request(
 
 async def tunnel_websocket(websocket: WebSocket, target_host: str, target_port: int):
     """Create a tunnel between WebSocket and target server"""
+    logger.debug(f"Creating WebSocket tunnel to {target_host}:{target_port}")
     try:
         # Connect to target server
         reader, writer = await asyncio.open_connection(target_host, target_port)
 
         # Create bidirectional tunnel
+        logger.debug("Creating bidirectional tunnel")
+
         async def forward_ws_to_target():
+            logger.debug("Forwarding WS to target")
             try:
                 while True:
                     data = await websocket.receive_bytes()
