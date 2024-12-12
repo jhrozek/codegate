@@ -1,14 +1,21 @@
 import asyncio
+import json
 import re
 import ssl
 from typing import Dict, Optional, Tuple
 from urllib.parse import unquote, urljoin, urlparse
 
 import structlog
+from litellm.types.utils import ModelResponse
 
 from codegate.ca.codegate_ca import CertificateAuthority
 from codegate.config import Config
+from codegate.pipeline.base import PipelineContext
+from codegate.pipeline.factory import PipelineFactory
+from codegate.pipeline.output import OutputPipelineInstance
+from codegate.pipeline.secrets.manager import SecretsManager
 from codegate.providers.copilot.mapping import VALIDATED_ROUTES
+from codegate.providers.normalizer.completion import CompletionNormalizer
 
 logger = structlog.get_logger("codegate")
 
@@ -42,6 +49,86 @@ class CopilotProvider(asyncio.Protocol):
         self.decrypted_data = bytearray()
         # Get the singleton instance of CertificateAuthority
         self.ca = CertificateAuthority.get_instance()
+        self.pipeline_factory = PipelineFactory(SecretsManager())
+        self.context_tracking: Optional[PipelineContext] = None
+
+    def _select_pipeline(self, headers: list[str]):
+        for header in headers:
+            if header.lower().startswith("user-agent:") and "GithubCopilot/" in header:
+                logger.debug("Using FIM pipeline for Github Copilot")
+                return self.pipeline_factory.create_fim_pipeline
+            logger.debug("No pipeline selected")
+
+        return None
+
+    async def _body_through_pipeline(self, headers: list[str], body: bytes) -> bytes:
+        logger.debug(f"Processing body through pipeline: {len(body)} bytes")
+        pipeline_constructor = self._select_pipeline(headers)
+
+        if pipeline_constructor is None:
+            return body
+
+        normalizer = None
+        if pipeline_constructor == self.pipeline_factory.create_fim_pipeline:
+            normalizer = CompletionNormalizer()
+            json_body = json.loads(body)
+            normalized_json_body = normalizer.normalize(json_body)
+        else:
+            return body
+
+        pipeline = pipeline_constructor()
+        result = await pipeline.process_request(
+            request = normalized_json_body,
+            provider = "github-copilot",
+            prompt_id = "fake-prompt-id",
+            model = "model_name",   # Replace with actual model if needed
+            api_key = None,         # Extract from headers if needed
+        )
+
+        # Use the modified request body from the pipeline result
+        if result.request:
+            normalized_json_body = normalizer.denormalize(result.request)
+            body = json.dumps(normalized_json_body).encode()
+
+        logger.debug("Processing body through pipeline")
+        return body
+
+    async def _write_headers_to_target(self, headers: list[str]):
+        request_line = f"{self.method} /{self.path} {self.version}\r\n".encode()
+
+        logger.debug(f"Request Line: {request_line}")
+        header_block = '\r\n'.join(headers).encode()
+        header_payload = request_line + header_block + b'\r\n\r\n'
+        self.log_decrypted_data(header_block, "Request Headers")
+        self.target_transport.write(header_payload)
+
+    async def _write_body_to_target(self, headers: list[str], body: bytes):
+        logger.debug(f"Writing body to target: {len(body)} bytes fn: _write_body_to_target")
+        logger.debug(f"Using original {self.original_path} path: {self.path} method: {self.method}")
+        logger.debug(f"Using headers: {headers}")
+
+        print("------ ORIGINAL BODY")
+        print(body)
+        print("------ END ORIGINAL BODY")
+
+        body = await self._body_through_pipeline(headers, body)
+
+        for header in headers:
+            if header.lower().startswith("content-length:"):
+                print(f"------ original content-length header: {header}")
+                headers.remove(header)
+                break
+        headers.append(f"Content-Length: {len(body)}")
+        print(f"------ new content-length header: Content-Length: {len(body)}")
+
+        print("------ MODIFIED BODY")
+        print(body)
+        print("------ END MODIFIED BODY")
+
+        await self._write_headers_to_target(headers)
+        for i in range(0, len(body), CHUNK_SIZE):
+            chunk = body[i:i + CHUNK_SIZE]
+            self.target_transport.write(chunk)
 
     def connection_made(self, transport: asyncio.Transport):
         logger.debug("Client connected fn: connection_made")
@@ -61,7 +148,7 @@ class CopilotProvider(asyncio.Protocol):
             return full_path.lstrip("/")
         return full_path
 
-    def get_headers(self) -> Dict[str, str]:
+    def get_headers(self, buffer: bytes) -> Dict[str, str]:
         """Get request headers as a dictionary"""
         logger.debug("Getting headers as dictionary fn: get_headers")
         headers_dict = {}
@@ -191,26 +278,14 @@ class CopilotProvider(asyncio.Protocol):
             if not has_host:
                 new_headers.append(f"Host: {self.target_host}")
 
-            request_line = f"{self.method} /{self.path} {self.version}\r\n".encode()
-            logger.debug(f"Request Line: {request_line}")
-            header_block = "\r\n".join(new_headers).encode()
-            headers = request_line + header_block + b"\r\n\r\n"
-
             if self.target_transport:
-                logger.debug("=" * 40)
-                self.log_decrypted_data(headers, "Request")
-                self.target_transport.write(headers)
-                logger.debug("=" * 40)
-
-                body_start = self.buffer.index(b"\r\n\r\n") + 4
+                body_start = self.buffer.index(b'\r\n\r\n') + 4
                 body = self.buffer[body_start:]
 
                 if body:
                     self.log_decrypted_data(body, "Request Body")
 
-                for i in range(0, len(body), CHUNK_SIZE):
-                    chunk = body[i : i + CHUNK_SIZE]
-                    self.target_transport.write(chunk)
+                await self._write_body_to_target(new_headers, body)
             else:
                 logger.debug("=" * 40)
                 logger.error("Target transport not available")
