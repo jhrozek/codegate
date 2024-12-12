@@ -24,6 +24,74 @@ MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB
 CHUNK_SIZE = 64 * 1024  # 64KB
 
 
+class SSEProcessor:
+    def __init__(self):
+        self.buffer = ""
+        self.initial_chunk = True
+        self.chunk_size = None  # Store the original chunk size
+        self.size_written = False
+
+    def process_chunk(self, chunk: bytes) -> list:
+        # Skip any chunk size lines (hex number followed by \r\n)
+        try:
+            chunk_str = chunk.decode('utf-8')
+            lines = chunk_str.split('\r\n')
+            # Skip lines that look like chunk sizes (hex numbers)
+            data_lines = [line for line in lines if not all(c in '0123456789abcdefABCDEF' for c in line.strip())]
+            self.buffer += '\n'.join(data_lines)
+        except UnicodeDecodeError:
+            print(f"Failed to decode chunk")
+
+        records = []
+        while True:
+            record_end = self.buffer.find('\n\n')
+            if record_end == -1:
+                print(f"REMAINING BUFFER {self.buffer}")
+                break
+
+            record = self.buffer[:record_end]
+            self.buffer = self.buffer[record_end + 2:]
+
+            if record.startswith('data: '):
+                data_content = record[6:]
+                if data_content.strip() == '[DONE]':
+                    records.append({'type': 'done'})
+                else:
+                    try:
+                        data = json.loads(data_content)
+                        records.append({'type': 'data', 'content': data})
+                    except json.JSONDecodeError:
+                        print(f"Failed to parse JSON: {data_content}")
+
+        return records
+
+    def get_pending(self):
+        """Return any pending incomplete data in the buffer"""
+        return self.buffer
+
+class SSEStreamIterator:
+    def __init__(self):
+        self.queue = asyncio.Queue()
+        self.done = False
+
+    def add_record(self, record: dict):
+        if not self.done:
+            self.queue.put_nowait(record)
+            if record['type'] == 'done':
+                self.done = True
+
+    async def __anext__(self):
+        if self.done and self.queue.empty():
+            raise StopAsyncIteration
+        
+        record = await self.queue.get()
+        if record['type'] == 'done':
+            return ModelResponse(type='done')
+        return ModelResponse(**record['content'])
+
+    def __aiter__(self):
+        return self
+
 class CopilotProvider(asyncio.Protocol):
     def __init__(self, loop):
         logger.debug("Initializing CopilotProvider class: CopilotProvider")
@@ -309,10 +377,61 @@ class CopilotProvider(asyncio.Protocol):
             logger.debug("Handling HTTP request")
             asyncio.create_task(self.handle_http_request())
 
-    def _forward_data_to_target(self, data: bytes) -> None:
+    async def _forward_data_through_pipeline(self, data: bytes):
+        if b'\r\n\r\n' not in data:
+            # not HTTP, pass as-is
+            return data
+
+        headers_end = data.index(b'\r\n\r\n')
+        headers = data[:headers_end].split(b'\r\n')
+
+        request = headers[0].decode('utf-8')
+        method, full_path, version = request.split(' ')
+        body_start = data.index(b'\r\n\r\n') + 4
+        body = data[body_start:]
+
+        if method != 'POST' and full_path != "/chat/completions":
+            # not completion, forward as-is
+            return data
+
+        headers_dict = self.get_headers(data)
+        request_id = headers_dict.get("x-request-id", "fake-prompt-id")
+
+        pipeline = self.pipeline_factory.create_input_pipeline()
+        json_body = json.loads(body)
+        result = await pipeline.process_request(
+            request = json_body,
+            provider = "github-copilot",
+            prompt_id = request_id,
+            model = "model_name",   # Replace with actual model if needed
+            api_key = None,
+        )
+
+        self.context_tracking = result.context
+
+        # Use the modified request body from the pipeline result
+        if result.request:
+            body = json.dumps(result.request).encode()
+
+        # Modify headers to update content length
+        new_headers = []
+        for header in headers[1:]:  # Skip the request line
+            if not header.lower().startswith(b"content-length:"):
+                new_headers.append(header)
+        new_headers.append(f"Content-Length: {len(body)}".encode())
+
+        # Reconstruct the full request
+        request_line = headers[0]  # Original request line
+        header_block = b'\r\n'.join([request_line] + new_headers)
+        modified_request = header_block + b'\r\n\r\n' + body
+
+        return modified_request
+
+    async def _forward_data_to_target(self, data: bytes) -> None:
         """Forward data to target if connection is established"""
         if self.target_transport and not self.target_transport.is_closing():
             self.log_decrypted_data(data, "Client to Server")
+            data = await self._forward_data_through_pipeline(data)
             self.target_transport.write(data)
 
     def data_received(self, data: bytes) -> None:
@@ -339,7 +458,7 @@ class CopilotProvider(asyncio.Protocol):
                 self._handle_parsed_headers()
             else:
                 # Forward data to target if headers are already parsed
-                self._forward_data_to_target(data)
+                asyncio.create_task(self._forward_data_to_target(data))
 
         except asyncio.CancelledError:
             logger.warning("Operation cancelled")
@@ -539,6 +658,51 @@ class CopilotProxyTargetProtocol(asyncio.Protocol):
         logger.debug("Initializing CopilotProxyTargetProtocol class: CopilotProxyTargetProtocol")
         self.proxy = proxy
         self.transport: Optional[asyncio.Transport] = None
+        self.sse_processor = None
+        self.headers_sent = False
+        self.response_queue = asyncio.Queue()
+        self.stream_task = None
+        self.stream_iterator = None
+
+        # Debug buffers
+        self.raw_buffer = bytearray()
+        self.processed_buffer = bytearray()
+        self.output_pipeline_instance = None
+
+    def _process_chunk(self, chunk: bytes):
+        if not self.sse_processor:
+            self._proxy_transport_write(chunk)
+            return
+
+        if not self.stream_iterator:
+            self.stream_iterator = SSEStreamIterator()
+            self.stream_task = asyncio.create_task(self._stream_processor())
+
+        records = self.sse_processor.process_chunk(chunk)
+        for record in records:
+            self.stream_iterator.add_record(record)
+
+    async def _stream_processor(self):
+        async for processed_response in self.process_stream(self.stream_iterator):
+            if processed_response.type == 'done':
+                sse_data = b'data: [DONE]\n\n'
+            else:
+                sse_data = f"data: {json.dumps(processed_response.dict())}\n\n".encode('utf-8')
+                
+            chunk_size = hex(len(sse_data))[2:] + '\r\n'
+            self._proxy_transport_write(chunk_size.encode())
+            self._proxy_transport_write(sse_data)
+            self._proxy_transport_write(b'\r\n')
+            
+            if processed_response.type == 'done':
+                self._proxy_transport_write(b'0\r\n\r\n')
+
+    def _proxy_transport_write(self, data: bytes):
+        self.processed_buffer.extend(data)
+        self.proxy.transport.write(data)
+        print("------ WRITE DATA START")
+        print(data)
+        print("------ WRITE DATA END")
 
     def connection_made(self, transport: asyncio.Transport):
         logger.debug(f"Connection made to target {self.proxy.target_host}:{self.proxy.target_port}")
@@ -547,9 +711,56 @@ class CopilotProxyTargetProtocol(asyncio.Protocol):
 
     def data_received(self, data: bytes):
         logger.debug(f"Data received from target {self.proxy.target_host}:{self.proxy.target_port}")
+
+        self.raw_buffer.extend(data)  # Store original incoming data
+        with open("raw_buffer.txt", "wb") as f:
+            f.write(self.raw_buffer)
+
+        if self.proxy.context_tracking is not None and self.sse_processor is None:
+            logger.debug("Tracking context for pipeline processing")
+            self.sse_processor = SSEProcessor()
+            out_pipeline_processor = self.proxy.pipeline_factory.create_output_pipeline()
+            self.output_pipeline_instance = OutputPipelineInstance(
+                pipeline_steps=out_pipeline_processor.pipeline_steps,
+                input_context=self.proxy.context_tracking,
+            )
+
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.log_decrypted_data(data, "Server to Client")
-            self.proxy.transport.write(data)
+
+            # DEBUGGING
+            #self.proxy.transport.write(data)
+
+            print("------ TARGET DATA START")
+            print(data)
+            print("------ TARGET DATA END")
+
+            if not self.sse_processor:
+                # Pass through non-SSE data unchanged
+                logger.debug("No context tracked, pass through")
+                print("------ WRITE DATA START")
+                print(data)
+                print("------ WRITE DATA END")
+                self._proxy_transport_write(data)
+                return
+
+            # Check if this is the first chunk with headers
+            if not self.headers_sent:
+                header_end = data.find(b'\r\n\r\n')
+                if header_end != -1:
+                    self.headers_sent = True
+                    # Send headers first
+                    headers = data[:header_end + 4]
+                    print("------ WRITE HEADERS START")
+                    print(headers)
+                    print("------ WRITE HEADERS END")
+                    self._proxy_transport_write(headers)
+                    logger.debug(f"Headers sent: {headers}")
+
+                    data = data[header_end + 4:]
+                    self.stream_task = asyncio.create_task(self._stream_processor())
+
+            self._process_chunk(data)
 
     def connection_lost(self, exc):
         logger.debug(
@@ -557,3 +768,5 @@ class CopilotProxyTargetProtocol(asyncio.Protocol):
         )
         if self.proxy.transport and not self.proxy.transport.is_closing():
             self.proxy.transport.close()
+
+        # TODO: clear the pipeline
